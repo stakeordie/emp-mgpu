@@ -31,4 +31,8 @@ yarn-error.log*
 # Sentry Config File
 .sentryclirc
 
+# API tokens
+.hf_token
+HF_TOKEN=*
+
 package-lock.json
