@@ -47,6 +47,9 @@ services:
     image: emprops/comfy-fork-devel:latest
     environment:
       - COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
+      - TEST_GPUS=1
+      - AWS_TEST_MODE=true
+      - SKIP_AWS_SYNC=true
     build:
       args:
         COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git

@@ -6,6 +6,7 @@ RUN apt update && apt-get install -y \
     cron sudo ssh zstd jq build-essential cmake ninja-build \
     gcc g++ openssh-client libx11-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxi-dev libgl1-mesa-dev libglfw3-dev software-properties-common \
+    tar jq curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -85,6 +86,15 @@ RUN chmod +x /etc/init.d/comfyui && \
 
 COPY ./scripts/mgpu /usr/local/bin/mgpu
 RUN chmod +x /usr/local/bin/mgpu
+
+# >>> ADDED FOR EMP-REDIS-WORKER
+COPY scripts/emp-redis-worker /etc/init.d/emp-redis-worker
+RUN chmod +x /etc/init.d/emp-redis-worker
+RUN update-rc.d emp-redis-worker defaults
+
+COPY scripts/empredis-mgr /usr/local/bin/empredis-mgr
+RUN chmod +x /usr/local/bin/empredis-mgr
+# <<< END ADDED FOR EMP-REDIS-WORKER
 
 RUN mkdir -p /usr/local/lib/mcomfy
 COPY ./scripts/mcomfy /usr/local/bin/mcomfy
