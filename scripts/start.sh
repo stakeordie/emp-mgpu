@@ -971,8 +971,8 @@ setup_redis_workers() {
 
         # --- Setup Worker Environment ---
         # Determine the correct ComfyUI port for this worker
-        # Note: get_worker_port function needs to be defined or sourced
-        comfyui_port=$(get_worker_port $i)
+        # Restore original port calculation
+        local comfyui_port=$((8188 + i))
 
         # Determine Worker ID
         host_identifier=$(echo "$HOSTNAME" | cut -d'-' -f1)
@@ -1016,11 +1016,14 @@ EOF
 start_redis_workers() {
     log "Starting Redis Workers..."
     
-    log "Starting Redis Worker instances via empredis-mgr..."
-    empredis-mgr start all
-    # Check status?
+    log "Starting Redis Worker instances via wgpu..."
+    # First make sure the worker directories are set up
+    wgpu setup all
+    # Then start the workers
+    wgpu start all
+    # Check status
     sleep 5 # Give them time to start
-    empredis-mgr status all
+    wgpu status all
     log "Redis Worker start command issued."
 }
 

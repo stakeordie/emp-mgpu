@@ -2,11 +2,10 @@
 FROM pytorch/pytorch:latest AS start
 
 RUN apt update && apt-get install -y \
-    git git-lfs rsync nginx wget curl nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6\
-    cron sudo ssh zstd jq build-essential cmake ninja-build \
+    git git-lfs rsync nginx wget curl jq tar nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6\
+    cron sudo ssh zstd build-essential cmake ninja-build \
     gcc g++ openssh-client libx11-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxi-dev libgl1-mesa-dev libglfw3-dev software-properties-common \
-    tar jq curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -88,12 +87,12 @@ COPY ./scripts/mgpu /usr/local/bin/mgpu
 RUN chmod +x /usr/local/bin/mgpu
 
 # >>> ADDED FOR EMP-REDIS-WORKER
-COPY scripts/emp-redis-worker /etc/init.d/emp-redis-worker
-RUN chmod +x /etc/init.d/emp-redis-worker
-RUN update-rc.d emp-redis-worker defaults
+COPY scripts/worker /etc/init.d/worker
+RUN chmod +x /etc/init.d/worker
+RUN update-rc.d worker defaults
 
-COPY scripts/empredis-mgr /usr/local/bin/empredis-mgr
-RUN chmod +x /usr/local/bin/empredis-mgr
+COPY scripts/wgpu /usr/local/bin/wgpu
+RUN chmod +x /usr/local/bin/wgpu
 # <<< END ADDED FOR EMP-REDIS-WORKER
 
 RUN mkdir -p /usr/local/lib/mcomfy
