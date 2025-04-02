@@ -1,0 +1,276 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          worker
+# Required-Start:    $network
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start Redis Worker
+### END INIT INFO
+
+# Paths
+ROOT="${ROOT:-/workspace}"
+NUM_GPUS="${NUM_GPUS:-0}"  # Default to CPU mode if not set
+
+# Setup logging
+setup_logs() {
+    local GPU_NUM=$1
+    local WORK_DIR="${ROOT}/worker_gpu${GPU_NUM}"
+    
+    # Create log directories
+    mkdir -p "${WORK_DIR}/logs"
+    chmod 755 "${WORK_DIR}/logs"
+    
+    # Create empty log file if it doesn't exist
+    touch "${WORK_DIR}/logs/output.log"
+    chmod 644 "${WORK_DIR}/logs/output.log"
+}
+
+log() {
+    local GPU_NUM=$1
+    shift
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local msg="[Worker GPU${GPU_NUM}] $*"
+    local log_line="[$timestamp] $msg"
+    
+    # Always write to start.log
+    if [ -w "${ROOT}/logs/start.log" ]; then
+        echo "$log_line" >> "${ROOT}/logs/start.log"
+    else
+        echo "WARNING: Cannot write to ${ROOT}/logs/start.log" >&2
+    fi
+    
+    # Write to service-specific logs
+    local LOG_DIR="${ROOT}/worker_gpu${GPU_NUM}/logs"
+    
+    if [ -d "$LOG_DIR" ]; then
+        echo "$log_line" >> "${LOG_DIR}/output.log"
+    fi
+    
+    # Always echo to stdout for Docker logs
+    echo "$msg"
+}
+
+start() {
+    local GPU_NUM=$1
+    local WORK_DIR="${ROOT}/worker_gpu${GPU_NUM}"
+
+    
+    # Setup logs first
+    setup_logs "$GPU_NUM"
+    
+    # Check if already running
+    if [ -f "${WORK_DIR}/worker.pid" ] && kill -0 "$(cat "${WORK_DIR}/worker.pid")" 2>/dev/null; then
+        log "$GPU_NUM" "Service is already running"
+        return 0
+    fi
+    
+    # Ensure directory exists
+    if [ ! -d "$WORK_DIR" ]; then
+        log "$GPU_NUM" "ERROR: Working directory $WORK_DIR does not exist"
+        log "$GPU_NUM" "Run 'wgpu setup $GPU_NUM' to create it"
+        return 1
+    fi
+    
+    
+    log "$GPU_NUM" "Starting Redis Worker service for GPU $GPU_NUM"
+    
+    # Set worker-specific environment variables
+    export WORKER_ID="worker-gpu${GPU_NUM}"
+    
+    # Set ComfyUI port for this worker to connect to
+    export WORKER_COMFYUI_PORT=$((8188 + GPU_NUM))
+    
+    # Load environment variables from .env file if it exists
+    if [ -f "${WORK_DIR}/.env" ]; then
+        log "$GPU_NUM" "Loading environment from ${WORK_DIR}/.env"
+        set -a
+        # shellcheck source=/dev/null
+        source "${WORK_DIR}/.env"
+        set +a
+    fi
+    
+    # Check for worker.py in the expected locations
+    local WORKER_SCRIPT_PATH=""
+    local WORKER_DIR=""
+    
+    if [ -f "${WORK_DIR}/worker/worker.py" ]; then
+        WORKER_SCRIPT_PATH="worker.py"
+        WORKER_DIR="${WORK_DIR}/worker"
+        log "$GPU_NUM" "Found worker.py at ${WORKER_DIR}/${WORKER_SCRIPT_PATH}"
+    elif [ -f "${WORK_DIR}/worker.py" ]; then
+        WORKER_SCRIPT_PATH="worker.py"
+        WORKER_DIR="${WORK_DIR}"
+        log "$GPU_NUM" "Found worker.py at ${WORKER_DIR}/${WORKER_SCRIPT_PATH}"
+    else
+        log "$GPU_NUM" "ERROR: worker.py not found in ${WORK_DIR} or ${WORK_DIR}/worker"
+        return 1
+    fi
+    
+    # Change to the worker directory
+    cd "$WORKER_DIR" || {
+        log "$GPU_NUM" "ERROR: Cannot change to worker directory $WORKER_DIR"
+        return 1
+    }
+    
+    # Start the worker process
+    log "$GPU_NUM" "Starting worker process with WORKER_COMFYUI_PORT=$WORKER_COMFYUI_PORT, WORKER_ID=$WORKER_ID"
+    
+    # Build command with all necessary environment variables and arguments
+    local CMD="python ${WORKER_SCRIPT_PATH}"
+    
+    # Add environment variables to the command
+    # Build the command
+    local CMD="python ${WORKER_SCRIPT_PATH}"
+    
+    
+    # Add worker ID
+    log "$GPU_NUM" "Setting WORKER_ID=worker-gpu${GPU_NUM}"
+    CMD="WORKER_ID=worker-gpu${GPU_NUM} WORKER_COMFYUI_PORT=$WORKER_COMFYUI_PORT $CMD"
+    
+    # Log the command
+    log "$GPU_NUM" "Running command: $CMD"
+    
+    # Execute the command in the background with unbuffered output
+    PYTHONUNBUFFERED=1 eval "$CMD" >> "${WORK_DIR}/logs/output.log" 2>&1 &
+    
+    # Save the PID
+    echo $! > "${WORK_DIR}/worker.pid"
+    
+    # Wait for service to start (up to 30 seconds)
+    log "$GPU_NUM" "Waiting for worker to start (PID: $(cat "${WORK_DIR}/worker.pid"))"
+    for i in {1..30}; do
+        if [ -f "${WORK_DIR}/worker.pid" ] && kill -0 "$(cat "${WORK_DIR}/worker.pid")" 2>/dev/null; then
+            # Check if the process is actually running by looking for it in the process list
+            if ps -p "$(cat "${WORK_DIR}/worker.pid")" | grep -q python; then
+                log "$GPU_NUM" "Worker started successfully after ${i} seconds"
+                return 0
+            fi
+        else
+            log "$GPU_NUM" "ERROR: Worker process died during startup"
+            return 1
+        fi
+        sleep 1
+    done
+    
+    # If we get here, the service didn't start properly within the timeout
+    log "$GPU_NUM" "WARNING: Worker started but could not verify it's running properly"
+    return 0
+}
+
+stop() {
+    local GPU_NUM=$1
+    local WORK_DIR="${ROOT}/worker_gpu${GPU_NUM}"
+    
+    # Check if running
+    if [ ! -f "${WORK_DIR}/worker.pid" ]; then
+        log "$GPU_NUM" "No PID file found, service is not running"
+        return 0
+    fi
+    
+    local PID
+    PID=$(cat "${WORK_DIR}/worker.pid")
+    
+    if ! kill -0 "$PID" 2>/dev/null; then
+        log "$GPU_NUM" "Process $PID is not running"
+        rm -f "${WORK_DIR}/worker.pid"
+        return 0
+    fi
+    
+    # Try graceful shutdown first
+    log "$GPU_NUM" "Stopping worker process (PID: $PID)"
+    kill -TERM "$PID"
+    
+    # Wait for process to terminate
+    local COUNT=0
+    while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 10 ]; do
+        sleep 1
+        COUNT=$((COUNT + 1))
+    done
+    
+    # If still running, force kill
+    if kill -0 "$PID" 2>/dev/null; then
+        log "$GPU_NUM" "Process did not terminate gracefully, forcing kill"
+        kill -9 "$PID"
+        sleep 1
+    fi
+    
+    # Also check for any other Python worker processes that might be running
+    local OTHER_PIDS
+    OTHER_PIDS=$(ps aux | grep "python.*worker\.py" | grep -v grep | awk '{print $2}')
+    
+    if [ -n "$OTHER_PIDS" ]; then
+        log "$GPU_NUM" "Found additional worker processes: $OTHER_PIDS"
+        for other_pid in $OTHER_PIDS; do
+            if [ "$other_pid" != "$PID" ]; then
+                log "$GPU_NUM" "Stopping additional worker process (PID: $other_pid)"
+                kill -TERM "$other_pid" 2>/dev/null || true
+                sleep 1
+                kill -9 "$other_pid" 2>/dev/null || true
+            fi
+        done
+    fi
+    
+    # Remove PID file
+    rm -f "${WORK_DIR}/worker.pid"
+    log "$GPU_NUM" "Worker stopped"
+    return 0
+}
+
+restart() {
+    local GPU_NUM=$1
+    
+    log "$GPU_NUM" "Restarting worker"
+    
+    stop "$GPU_NUM"
+    sleep 2
+    start "$GPU_NUM"
+    
+    return $?
+}
+
+status() {
+    local GPU_NUM=$1
+    local WORK_DIR="${ROOT}/worker_gpu${GPU_NUM}"
+    
+    if [ ! -f "${WORK_DIR}/worker.pid" ]; then
+        log "$GPU_NUM" "Worker is not running"
+        return 3  # Service not running
+    fi
+    
+    local PID
+    PID=$(cat "${WORK_DIR}/worker.pid")
+    
+    if kill -0 "$PID" 2>/dev/null; then
+        log "$GPU_NUM" "Worker is running (PID: $PID)"
+        
+        # Get process info
+        local PROCESS_INFO
+        PROCESS_INFO=$(ps -p "$PID" -o pid,ppid,cmd,etime,pcpu,pmem | grep -v PID)
+        
+        log "$GPU_NUM" "Process info: $PROCESS_INFO"
+        return 0  # Service running
+    else
+        log "$GPU_NUM" "PID file exists but process is not running"
+        rm -f "${WORK_DIR}/worker.pid"
+        return 1  # Service dead but PID file exists
+    fi
+}
+
+case "$1" in
+    start|stop|status|restart)
+        if [ -z "$2" ]; then
+            echo "Usage: $0 {start|stop|restart|status} GPU_NUM"
+            exit 1
+        fi
+        
+        $1 "$2"
+        exit $?
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status} GPU_NUM"
+        exit 1
+        ;;
+esac
+
+exit 0

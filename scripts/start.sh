@@ -108,22 +108,25 @@ main() {
     # Phase 11: Start ComfyUI services
     log_phase "11" "Starting ComfyUI services"
     start_comfyui
+
+    # Start Langflow
+    log_phase "12" "Starting Langflow"
+    setup_langflow
+
+    # Setup Redis Workers
+    log_phase "13" "Starting Redis Workers"
+    setup_redis_workers
+    # Start Redis Workers
+    start_redis_workers
     
-    # Phase 12: Verify all services
-    log_phase "12" "Verifying all services"
+    # Phase 14: Verify all services
+    log_phase "14" "Verifying all services"
     if ! verify_and_report; then
         log "ERROR: Service verification failed"
         # Don't exit - keep container running for debugging
     fi
 
-    # Start Langflow
-    setup_langflow
 
-    # Setup Redis Workers
-    setup_redis_workers
-
-    # Start Redis Workers
-    start_redis_workers
 }
 
 setup_env_vars() {
@@ -164,8 +167,30 @@ setup_env_vars() {
         echo "LANGFLOW_NEW_USER_IS_ACTIVE=${LANGFLOW_NEW_USER_IS_ACTIVE}"
         echo "LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT=${LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT}"
         echo "COMFY_REPO_URL=${COMFY_REPO_URL}"
+        echo "WORKER_REDIS_API_HOST=${WORKER_REDIS_API_HOST}"
+        echo "WORKER_REDIS_API_PORT=${WORKER_REDIS_API_PORT}"
+        echo "WORKER_USE_SSL=${WORKER_USE_SSL}"
+        echo "WORKER_CONNECTORS=${WORKER_CONNECTORS}"
+        echo "WORKER_WEBSOCKET_AUTH_TOKEN=${WORKER_WEBSOCKET_AUTH_TOKEN}"
+        echo "WORKER_HEARTBEAT_INTERVAL=${WORKER_HEARTBEAT_INTERVAL:-20}"
+        echo "WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}"
+        echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
+        echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
+        echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
     } >> /etc/environment
     
+
+        log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
+        log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
+        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
+        log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
+        log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
+        log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"
+        log "WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL}"
+        log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
+        log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
+        log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
+
     # Also add to profile for interactive sessions
     {
         echo "ROOT=${ROOT}"
@@ -186,6 +211,16 @@ setup_env_vars() {
         echo "LANGFLOW_NEW_USER_IS_ACTIVE=${LANGFLOW_NEW_USER_IS_ACTIVE}"
         echo "LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT=${LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT}"
         echo "COMFY_REPO_URL=${COMFY_REPO_URL}"
+        echo "WORKER_REDIS_API_HOST=${WORKER_REDIS_API_HOST}"
+        echo "WORKER_REDIS_API_PORT=${WORKER_REDIS_API_PORT}"
+        echo "WORKER_USE_SSL=${WORKER_USE_SSL}"
+        echo "WORKER_CONNECTORS=${WORKER_CONNECTORS}"
+        echo "WORKER_WEBSOCKET_AUTH_TOKEN=${WORKER_WEBSOCKET_AUTH_TOKEN}"
+        echo "WORKER_HEARTBEAT_INTERVAL=${WORKER_HEARTBEAT_INTERVAL:-20}"
+        echo "WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}"
+        echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
+        echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
+        echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
     } > /etc/profile.d/comfyui-env.sh
     
     # Set for current session
@@ -851,6 +886,7 @@ verify_services() {
     # 3. Final Summary
     log "=== Service Status Summary ==="
     log "NGINX: $(service nginx status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
+    log "Langflow: $(service langflow status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
     
     for instance in $(seq 0 $((NUM_GPUS-1))); do
         local service_status=$(mgpu status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
@@ -863,7 +899,38 @@ verify_services() {
         else
             log "ComfyUI GPU $instance: Service: $service_status, Proxy: $proxy_status, API: $api_status"
         fi
+        
+        # Also report worker status
+        local worker_status=$(wgpu status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        log "Redis Worker $instance: Service: $worker_status"
     done
+    
+    # Check Langflow
+    log "Checking Langflow service..."
+    if ! service langflow status >/dev/null 2>&1; then
+        log "ERROR: Langflow service is not running"
+        service langflow status 2>&1 | while read -r line; do log "  $line"; done
+        all_services_ok=false
+    else
+        log "Langflow service is running"
+        
+        # Check Langflow port
+        local langflow_port=7860
+        if ! netstat -tuln | grep -q ":$langflow_port "; then
+            log "ERROR: Langflow port $langflow_port is not listening"
+            all_services_ok=false
+        else
+            log "Langflow port $langflow_port is listening"
+            
+            # Try a test request to Langflow
+            if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:$langflow_port/ | grep -q "200\|302"; then
+                log "ERROR: Langflow is not responding to requests"
+                all_services_ok=false
+            else
+                log "Langflow is responding to requests"
+            fi
+        fi
+    fi
     
     # Check Redis Workers
     log "Checking Redis Workers..."
@@ -872,6 +939,69 @@ verify_services() {
         all_services_ok=false
     else
         log "Redis Workers: All instances reported running by empredis-mgr."
+        
+        # Check worker logs for connection status
+        for instance in $(seq 0 $((NUM_GPUS-1))); do
+            local worker_log_dir="${ROOT}/worker_gpu${instance}/logs/output.log"
+            
+            if [ ! -f "$worker_log_dir" ]; then
+                log "ERROR: Missing worker log file: $worker_log_dir"
+                all_services_ok=false
+            else
+                log "=== Last 10 lines of worker $instance log ==="
+                tail -n 10 "$worker_log_dir" | while read -r line; do log "  $line"; done
+                
+                # Check for successful connection to Redis in logs
+                if grep -q "Successfully connected to Redis" "$worker_log_dir"; then
+                    log "Worker $instance has successfully connected to Redis"
+                elif grep -q "Connecting to Redis" "$worker_log_dir"; then
+                    log "Worker $instance is attempting to connect to Redis"
+                else
+                    log "WARNING: Worker $instance may not be connecting to Redis properly"
+                    # Don't fail verification for this, just warn
+                fi
+                
+                # Check connector status
+                log "Checking connector status for worker $instance..."
+                
+                # Get list of connectors from environment or worker log
+                local connectors=""
+                if [ -n "$WORKER_CONNECTORS" ]; then
+                    connectors="$WORKER_CONNECTORS"
+                elif grep -q "WORKER_CONNECTORS" "$worker_log_dir"; then
+                    connectors=$(grep "WORKER_CONNECTORS" "$worker_log_dir" | head -1 | sed 's/.*WORKER_CONNECTORS: \(.*\)/\1/')
+                fi
+                
+                log "Worker $instance connectors: $connectors"
+                
+                # Check each connector
+                if [[ "$connectors" == *"comfyui"* ]]; then
+                    if grep -q "Successfully connected to ComfyUI" "$worker_log_dir"; then
+                        log "Worker $instance has successfully connected to ComfyUI connector"
+                    elif grep -q "Attempting to connect to ComfyUI" "$worker_log_dir"; then
+                        log "Worker $instance is attempting to connect to ComfyUI connector"
+                    else
+                        log "WARNING: Worker $instance may not be connecting to ComfyUI connector properly"
+                    fi
+                fi
+                
+                if [[ "$connectors" == *"simulation"* ]]; then
+                    if grep -q "Simulation connector initialized" "$worker_log_dir"; then
+                        log "Worker $instance has initialized simulation connector"
+                    else
+                        log "WARNING: Worker $instance may not have initialized simulation connector"
+                    fi
+                fi
+                
+                if [[ "$connectors" == *"image_processing"* ]]; then
+                    if grep -q "Image processing connector initialized" "$worker_log_dir"; then
+                        log "Worker $instance has initialized image_processing connector"
+                    else
+                        log "WARNING: Worker $instance may not have initialized image_processing connector"
+                    fi
+                fi
+            fi
+        done
     fi
     
     if [ "$all_services_ok" = true ]; then
@@ -923,7 +1053,11 @@ setup_langflow() {
 }
 
 setup_redis_workers() {
-    log "Setting up Redis Workers..."
+    log ""
+    log "===================================="
+    log "Starting Service Verification"
+    log "===================================="
+    
     
     local release_url="https://api.github.com/repos/stakeordie/emp-redis/releases/latest"
     local download_url
@@ -978,13 +1112,20 @@ setup_redis_workers() {
         host_identifier=$(echo "$HOSTNAME" | cut -d'-' -f1)
         worker_id="${host_identifier:-$HOSTNAME}-gpu${i}"
 
-        log "Creating worker-specific .env file at ${WORKER_DIR}/.env with WORKER_ID and WORKER_COMFYUI_PORT"
-        cat > "${WORKER_DIR}/.env" << EOF
-# Auto-generated by emp-mgpu setup for worker $i
-# Contains only worker-specific variables loaded via dotenv
-WORKER_ID=${worker_id}
-WORKER_COMFYUI_PORT=${comfyui_port}
-EOF
+
+        
+        log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
+        log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
+        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
+        log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
+        log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
+        log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"
+        log "WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL}"
+        log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
+        log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
+        log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
+
+        
 
         # --- Run Worker Setup Script (if exists) ---
         local setup_script="${WORKER_DIR}/scripts/setup.sh"
@@ -1001,6 +1142,21 @@ EOF
             log "Warning: Worker setup script ($setup_script) not found in extracted files."
         fi
 
+        # Log Redis environment variables for debugging
+        log "Redis environment variables for worker ${i}:"
+        log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
+        log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
+        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
+        log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
+        log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
+        log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"
+        log "WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL}"
+        log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
+        log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
+        log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
+        
+        # Note: .env file is now created by the wgpu script during setup
+        
         log "Worker setup complete for GPU ${i}"
     done
 

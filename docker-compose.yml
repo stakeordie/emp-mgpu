@@ -44,7 +44,7 @@ services:
   comfyui-fork-devel:
     <<: *base-service
     container_name: comfy-fork-devel
-    image: emprops/comfy-fork-devel:latest
+    image: emprops/comfy-fork-devel:worker
     environment:
       - COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
       - TEST_GPUS=1
