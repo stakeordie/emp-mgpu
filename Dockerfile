@@ -91,6 +91,14 @@ COPY scripts/worker /etc/init.d/worker
 RUN chmod +x /etc/init.d/worker
 RUN update-rc.d worker defaults
 
+# Added: 2025-04-07T16:24:00-04:00 - Worker watchdog for automatic restart
+COPY scripts/worker_watchdog.sh /usr/local/bin/worker_watchdog.sh
+RUN chmod +x /usr/local/bin/worker_watchdog.sh
+
+COPY scripts/worker-watchdog /etc/init.d/worker-watchdog
+RUN chmod +x /etc/init.d/worker-watchdog
+RUN update-rc.d worker-watchdog defaults
+
 COPY scripts/wgpu /usr/local/bin/wgpu
 RUN chmod +x /usr/local/bin/wgpu
 # <<< END ADDED FOR EMP-REDIS-WORKER

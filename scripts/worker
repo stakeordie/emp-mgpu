@@ -90,11 +90,16 @@ start() {
         set +a
     fi
     
-    # Check for worker.py in the expected locations
+    # Check for worker_main.py or worker.py in the expected locations
+    # Updated: 2025-04-07T15:59:00-04:00 - Added support for worker_main.py entry point
     local WORKER_SCRIPT_PATH=""
     local WORKER_DIR=""
     
-    if [ -f "${WORK_DIR}/worker/worker.py" ]; then
+    if [ -f "${WORK_DIR}/worker_main.py" ]; then
+        WORKER_SCRIPT_PATH="worker_main.py"
+        WORKER_DIR="${WORK_DIR}"
+        log "$GPU_NUM" "Found worker_main.py at ${WORKER_DIR}/${WORKER_SCRIPT_PATH}"
+    elif [ -f "${WORK_DIR}/worker/worker.py" ]; then
         WORKER_SCRIPT_PATH="worker.py"
         WORKER_DIR="${WORK_DIR}/worker"
         log "$GPU_NUM" "Found worker.py at ${WORKER_DIR}/${WORKER_SCRIPT_PATH}"
@@ -103,7 +108,7 @@ start() {
         WORKER_DIR="${WORK_DIR}"
         log "$GPU_NUM" "Found worker.py at ${WORKER_DIR}/${WORKER_SCRIPT_PATH}"
     else
-        log "$GPU_NUM" "ERROR: worker.py not found in ${WORK_DIR} or ${WORK_DIR}/worker"
+        log "$GPU_NUM" "ERROR: Neither worker_main.py nor worker.py found in ${WORK_DIR} or ${WORK_DIR}/worker"
         return 1
     fi
     
@@ -136,6 +141,11 @@ start() {
     
     # Save the PID
     echo $! > "${WORK_DIR}/worker.pid"
+    
+    # Create restart flag file
+    # Updated: 2025-04-07T16:15:30-04:00 - Added restart flag for automatic restart on crash
+    touch "${WORK_DIR}/restart_enabled"
+    log "$GPU_NUM" "Created restart flag file at ${WORK_DIR}/restart_enabled"
     
     # Wait for service to start (up to 30 seconds)
     log "$GPU_NUM" "Waiting for worker to start (PID: $(cat "${WORK_DIR}/worker.pid"))"
@@ -196,8 +206,8 @@ stop() {
     fi
     
     # Also check for any other Python worker processes that might be running
-    local OTHER_PIDS
-    OTHER_PIDS=$(ps aux | grep "python.*worker\.py" | grep -v grep | awk '{print $2}')
+    log "$GPU_NUM" "Checking for other worker processes..."
+    OTHER_PIDS=$(ps aux | grep -E "python.*(worker\.py|worker_main\.py)" | grep -v grep | awk '{print $2}')
     
     if [ -n "$OTHER_PIDS" ]; then
         log "$GPU_NUM" "Found additional worker processes: $OTHER_PIDS"
@@ -213,6 +223,14 @@ stop() {
     
     # Remove PID file
     rm -f "${WORK_DIR}/worker.pid"
+    
+    # Remove restart flag file
+    # Updated: 2025-04-07T16:16:00-04:00 - Remove restart flag on intentional stop
+    if [ -f "${WORK_DIR}/restart_enabled" ]; then
+        rm -f "${WORK_DIR}/restart_enabled"
+        log "$GPU_NUM" "Removed restart flag file at ${WORK_DIR}/restart_enabled"
+    fi
+    
     log "$GPU_NUM" "Worker stopped"
     return 0
 }

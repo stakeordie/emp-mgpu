@@ -992,14 +992,6 @@ verify_services() {
                         log "WARNING: Worker $instance may not have initialized simulation connector"
                     fi
                 fi
-                
-                if [[ "$connectors" == *"image_processing"* ]]; then
-                    if grep -q "Image processing connector initialized" "$worker_log_dir"; then
-                        log "Worker $instance has initialized image_processing connector"
-                    else
-                        log "WARNING: Worker $instance may not have initialized image_processing connector"
-                    fi
-                fi
             fi
         done
     fi
