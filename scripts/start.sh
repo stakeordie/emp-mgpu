@@ -1173,6 +1173,13 @@ start_redis_workers() {
     sleep 5 # Give them time to start
     wgpu status all
     log "Redis Worker start command issued."
+    
+    # Added: 2025-04-07T22:42:00-04:00 - Start worker watchdog service
+    log "Starting Worker Watchdog service..."
+    service worker-watchdog start
+    sleep 2 # Give it time to start
+    service worker-watchdog status
+    log "Worker Watchdog service started."
 }
 
 all_services_ok=true
