@@ -80,9 +80,10 @@ main() {
     log_phase "3" "Setting up custom nodes"
     setup_preinstalled_nodes
 
-    log_phase "4&5" "aws sync"
-    if ! s3_sync; then
-        log "ERROR: AWS sync failed"
+    # Updated: 2025-04-14T09:50:00-04:00 - Made storage sync provider-agnostic
+    log_phase "4&5" "model sync"
+    if ! sync_models; then
+        log "ERROR: Model sync failed"
         return 1
     fi
     
@@ -185,6 +186,14 @@ setup_env_vars() {
         echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
         echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
+        # Added: 2025-04-13T21:45:00-04:00 - Azure Blob Storage environment variables
+        # Updated: 2025-04-14T09:40:00-04:00 - Made environment variables provider-agnostic
+        echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT}"
+        echo "AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY}"
+        echo "AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER}"
+        echo "CLOUD_PROVIDER=${CLOUD_PROVIDER:-aws}"
+        echo "STORAGE_TEST_MODE=${STORAGE_TEST_MODE:-${AWS_TEST_MODE:-${AZURE_TEST_MODE:-false}}}"
+        echo "SKIP_STORAGE_SYNC=${SKIP_STORAGE_SYNC:-${SKIP_AWS_SYNC:-false}}"
     } >> /etc/environment
     
 
@@ -425,35 +434,294 @@ setup_preinstalled_nodes() {
     fi
 }
 
+# Updated: 2025-04-13T22:00:00-04:00 - Added support for Azure Blob Storage
 sync_models() {
-    log "=== Starting model sync process ==="
+    log "=== Starting model sync process ===" 
     
-    # Determine which bucket to use based on AWS_TEST_MODE
-    local bucket="emprops-share"
-    if [ "${AWS_TEST_MODE:-false}" = "true" ]; then
-        log "Using test bucket: emprops-share-test"
-        bucket="emprops-share-test"
-    else
-        log "Using production bucket: emprops-share"
-    fi
-
-    # Sync models and configs from S3
-    log "Starting sync from s3://$bucket to /workspace/shared..."
-    if [ "${SKIP_AWS_SYNC:-false}" = "true" ]; then
-        log "Skipping AWS S3 sync (SKIP_AWS_SYNC=true)"
-    else
-        log "Running AWS S3 sync command..."
-        aws s3 sync "s3://$bucket" /workspace/shared --size-only --exclude "custom_nodes/*" 2>&1 | tee -a "${START_LOG}"
-        local sync_status=$?
-        if [ $sync_status -eq 0 ]; then
-            log "SUCCESS: AWS S3 sync completed successfully"
+    # Check if CLOUD_PROVIDER is set
+    local provider="${CLOUD_PROVIDER:-aws}"
+    log "Using cloud provider: ${provider}"
+    
+    # Sync based on selected provider
+    if [ "${provider}" = "aws" ]; then
+        # Determine which bucket to use based on STORAGE_TEST_MODE
+        # Added: 2025-04-13T22:10:00-04:00 - Made environment variables provider-agnostic
+        local bucket="emprops-share"
+        if [ "${STORAGE_TEST_MODE:-${AWS_TEST_MODE:-false}}" = "true" ]; then
+            log "Using test bucket: emprops-share-test"
+            bucket="emprops-share-test"
         else
-            log "ERROR: AWS S3 sync failed with status $sync_status"
+            log "Using production bucket: emprops-share"
+        fi
+
+        # Sync models and configs from S3
+        log "Starting sync from s3://$bucket to /workspace/shared..."
+        if [ "${SKIP_STORAGE_SYNC:-${SKIP_AWS_SYNC:-false}}" = "true" ]; then
+            log "Skipping AWS S3 sync (SKIP_STORAGE_SYNC=true)"
+        else
+            log "Running AWS S3 sync command..."
+            aws s3 sync "s3://$bucket" /workspace/shared --size-only --exclude "custom_nodes/*" 2>&1 | tee -a "${START_LOG}"
+            local sync_status=$?
+            if [ $sync_status -eq 0 ]; then
+                log "SUCCESS: AWS S3 sync completed successfully"
+            else
+                log "ERROR: AWS S3 sync failed with status $sync_status"
+                return 1
+            fi
+        fi
+    elif [ "${provider}" = "azure" ]; then
+        # Call the azure_sync function
+        if ! azure_sync; then
+            log "ERROR: Azure sync failed"
             return 1
         fi
+    else
+        log "ERROR: Unknown CLOUD_PROVIDER: ${provider}. Must be 'aws' or 'azure'"
+        return 1
     fi
     
     log "=== Model sync process complete ==="
+}
+
+# Added: 2025-04-13T21:55:00-04:00 - Azure Blob Storage sync function
+# Updated: 2025-04-14T11:05:00-04:00 - Fixed Azure CLI sync and improved fallback
+azure_sync() {
+    log "=== Starting Azure Blob Storage sync process ===" 
+    
+    # Determine which container to use based on STORAGE_TEST_MODE
+    # Added: 2025-04-14T18:05:00-04:00 - Support for test and production containers
+    local container
+    if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
+        container="${AZURE_STORAGE_TEST_CONTAINER:-${AZURE_STORAGE_CONTAINER}}"
+        log "Using test container: ${container}"
+    else
+        container="${AZURE_STORAGE_CONTAINER}"
+        log "Using production container: ${container}"
+    fi
+    
+    # Sync models from Azure Blob Storage
+    log "Starting sync from Azure Blob Storage to /workspace/shared..."
+    if [ "${SKIP_STORAGE_SYNC:-${SKIP_AZURE_SYNC:-false}}" = "true" ]; then
+        log "Skipping Azure sync (SKIP_STORAGE_SYNC=true)"
+        return 0
+    fi
+    
+    # Ensure destination directory exists
+    mkdir -p /workspace/shared
+    
+    # Get credentials from environment variables
+    local account_name="${AZURE_STORAGE_ACCOUNT}"
+    local account_key="${AZURE_STORAGE_KEY}"
+    
+    log "Using storage account: ${account_name}"
+    
+    # Flag to track if we've successfully downloaded anything
+    local download_success=false
+    
+    # Try Azure CLI if credentials are available
+    if [ -n "${account_name}" ] && [ -n "${account_key}" ]; then
+        log "Attempting Azure CLI sync with account: ${account_name}"
+        
+        # Create a temporary directory for the source
+        mkdir -p /tmp/azure_sync_source
+        touch /tmp/azure_sync_source/.keep
+        
+        # Try to download all blobs from the container
+        log "Listing blobs in container ${container}..."
+        if az storage blob list \
+            --account-name "${account_name}" \
+            --account-key "${account_key}" \
+            --container-name "${container}" \
+            --query "[].name" -o tsv > /tmp/azure_blob_list 2>/dev/null; then
+            
+            log "Found $(wc -l < /tmp/azure_blob_list) blobs in container"
+            
+            # Create necessary directories
+            mkdir -p /workspace/shared/models/checkpoints
+            mkdir -p /workspace/shared/models/loras
+            
+            # Count total blobs for progress tracking
+            local total_blobs=$(wc -l < /tmp/azure_blob_list)
+            local current_blob=0
+            local successful_downloads=0
+            local failed_downloads=0
+            
+            log "Starting download of $total_blobs files..."
+            
+            # Download each blob
+            while read -r blob_name; do
+                # Update progress counter
+                current_blob=$((current_blob + 1))
+                
+                # Skip custom_nodes directory
+                if [[ "$blob_name" == custom_nodes/* ]]; then
+                    log "[$current_blob/$total_blobs] Skipping $blob_name (in custom_nodes directory)"
+                    continue
+                fi
+                
+                # Create destination directory
+                local dest_file="/workspace/shared/$blob_name"
+                local dest_dir=$(dirname "$dest_file")
+                mkdir -p "$dest_dir"
+                
+                # Check if file already exists and has content
+                if [ -s "$dest_file" ]; then
+                    log "[$current_blob/$total_blobs] File $blob_name already exists, skipping"
+                    successful_downloads=$((successful_downloads + 1))
+                    download_success=true
+                    continue
+                fi
+                
+                # Calculate percentage complete
+                local percent_complete=$((current_blob * 100 / total_blobs))
+                
+                log "[$current_blob/$total_blobs - $percent_complete%] Downloading $blob_name..."
+                
+                # Generate SAS token for authenticated access
+                log "Generating SAS token for $blob_name..."
+                local expiry=$(date -u -d "+1 hour" "+%Y-%m-%dT%H:%MZ" 2>/dev/null || date -u -v+1H "+%Y-%m-%dT%H:%MZ")
+                local sas_token=$(az storage blob generate-sas \
+                    --account-name "${account_name}" \
+                    --account-key "${account_key}" \
+                    --container-name "${container}" \
+                    --name "$blob_name" \
+                    --permissions r \
+                    --expiry "$expiry" \
+                    --output tsv 2>/dev/null)
+                
+                if [ -n "$sas_token" ]; then
+                    local sas_url="https://${account_name}.blob.core.windows.net/${container}/${blob_name}?${sas_token}"
+                    
+                    # Use wget with progress bar for streaming download
+                    log "Downloading with SAS token..."
+                    if wget --progress=bar:force:noscroll -O "$dest_file" "$sas_url" 2>&1 | tee -a "${START_LOG}"; then
+                        log "[$current_blob/$total_blobs - $percent_complete%] Successfully downloaded $blob_name"
+                        download_success=true
+                        successful_downloads=$((successful_downloads + 1))
+                    else
+                        log "[$current_blob/$total_blobs - $percent_complete%] Failed to download $blob_name"
+                        failed_downloads=$((failed_downloads + 1))
+                    fi
+                else
+                    log "[$current_blob/$total_blobs - $percent_complete%] Failed to generate SAS token for $blob_name"
+                    failed_downloads=$((failed_downloads + 1))
+                fi
+            done < /tmp/azure_blob_list
+            
+            # Log download summary
+            log "Download summary: $successful_downloads successful, $failed_downloads failed out of $total_blobs total files"
+            
+            # If we had successful downloads, don't try fallback method
+            if [ "$download_success" = "true" ]; then
+                log "Azure CLI method successful, skipping fallback downloads"
+                return 0
+            fi
+        else
+            log "Failed to list blobs in container. Check credentials and container name."
+        fi
+    else
+        log "Azure storage account credentials missing. AZURE_STORAGE_ACCOUNT: ${account_name:-<not set>}"
+    fi
+    
+    # Only try direct downloads if Azure CLI method completely failed
+    log "Azure CLI method failed, trying direct downloads..."
+    
+    # Define known model paths to try
+    local model_paths=(
+        "models/checkpoints/v1-5-pruned-emaonly.ckpt"
+        "models/checkpoints/sd_xl_base_1.0.safetensors"
+        "models/checkpoints/sd_xl_refiner_1.0.safetensors"
+        "models/loras/sd_xl_offset_example-lora_1.0.safetensors"
+    )
+    
+    # Create necessary directories
+    mkdir -p /workspace/shared/models/checkpoints
+    mkdir -p /workspace/shared/models/loras
+    
+    # Progress tracking variables
+    local total_models=${#model_paths[@]}
+    local current_model=0
+    local successful_downloads=0
+    local failed_downloads=0
+    local not_found=0
+    
+    log "Starting direct download of $total_models known models..."
+    
+    # Try downloading each known model
+    for model_path in "${model_paths[@]}"; do
+        # Update progress counter
+        current_model=$((current_model + 1))
+        
+        # Calculate percentage complete
+        local percent_complete=$((current_model * 100 / total_models))
+        
+        local dest_file="/workspace/shared/$model_path"
+        local dest_dir=$(dirname "$dest_file")
+        mkdir -p "$dest_dir"
+        
+        # Check if file already exists and has content
+        if [ -s "$dest_file" ]; then
+            log "[$current_model/$total_models] File $model_path already exists, skipping"
+            successful_downloads=$((successful_downloads + 1))
+            download_success=true
+            continue
+        fi
+        
+        log "[$current_model/$total_models - $percent_complete%] Checking for $model_path..."
+        
+        # Generate SAS token for authenticated access
+        log "Generating SAS token for $model_path..."
+        local expiry=$(date -u -d "+1 hour" "+%Y-%m-%dT%H:%MZ" 2>/dev/null || date -u -v+1H "+%Y-%m-%dT%H:%MZ")
+        local sas_token=$(az storage blob generate-sas \
+            --account-name "${account_name}" \
+            --account-key "${account_key}" \
+            --container-name "${container}" \
+            --name "$model_path" \
+            --permissions r \
+            --expiry "$expiry" \
+            --output tsv 2>/dev/null)
+        
+        if [ -n "$sas_token" ]; then
+            # SAS token generated successfully, blob exists
+            local sas_url="https://${account_name}.blob.core.windows.net/${container}/$model_path?${sas_token}"
+            
+            log "[$current_model/$total_models - $percent_complete%] Found $model_path, downloading with SAS token..."
+            
+            # Use wget with better progress bar formatting
+            if wget --progress=bar:force:noscroll -O "$dest_file" "$sas_url" 2>&1 | tee -a "${START_LOG}"; then
+                log "[$current_model/$total_models - $percent_complete%] Successfully downloaded $model_path"
+                download_success=true
+                successful_downloads=$((successful_downloads + 1))
+            else
+                log "[$current_model/$total_models - $percent_complete%] Failed to download $model_path"
+                failed_downloads=$((failed_downloads + 1))
+            fi
+        else
+            log "[$current_model/$total_models - $percent_complete%] $model_path not found in container or failed to generate SAS token"
+            not_found=$((not_found + 1))
+        fi
+    done
+    
+    # Log download summary
+    log "Direct download summary: $successful_downloads successful, $failed_downloads failed, $not_found not found out of $total_models total models"
+    
+    # Set sync status based on download success
+    local sync_status=1
+    if [ "$download_success" = "true" ]; then
+        sync_status=0
+    fi
+    
+    if [ $sync_status -eq 0 ]; then
+        log "SUCCESS: Azure sync completed successfully"
+    else
+        log "WARNING: Azure sync failed. Some models may be missing."
+    fi
+    
+    if [ $sync_status -ne 0 ]; then
+        return 1
+    fi
+    
+    log "=== Azure sync process complete ==="
 }
 
 manage_custom_nodes() {

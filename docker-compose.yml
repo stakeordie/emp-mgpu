@@ -48,8 +48,26 @@ services:
     environment:
       - COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
       - TEST_GPUS=1
-      - AWS_TEST_MODE=true
-      - SKIP_AWS_SYNC=true
+      # Updated: 2025-04-14T10:15:00-04:00 - Testing Azure sync
+      - STORAGE_TEST_MODE=true
+      - SKIP_STORAGE_SYNC=false
+      - CLOUD_PROVIDER=azure
+      - AZURE_STORAGE_CONTAINER=emprops-share-test
+    build:
+      args:
+        COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git
+  comfyui-fork-devel-a1111:
+    <<: *base-service
+    container_name: comfyui-fork-devel-a1111
+    image: emprops/comfyui-fork-devel-a1111:latest
+    environment:
+      - COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
+      - TEST_GPUS=1
+      # Updated: 2025-04-14T10:15:00-04:00 - Testing Azure sync
+      - STORAGE_TEST_MODE=true
+      - SKIP_STORAGE_SYNC=false
+      - CLOUD_PROVIDER=azure
+      - AZURE_STORAGE_CONTAINER=emprops-share-test
     build:
       args:
         COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git

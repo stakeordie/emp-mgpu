@@ -1,19 +1,24 @@
 # Builder stage for SSH key
 FROM pytorch/pytorch:latest AS start
 
+# Updated: 2025-04-14T10:30:00-04:00 - Added Azure CLI installation
 RUN apt update && apt-get install -y \
     git git-lfs rsync nginx wget curl jq tar nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6\
     cron sudo ssh zstd build-essential cmake ninja-build \
     gcc g++ openssh-client libx11-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxi-dev libgl1-mesa-dev libglfw3-dev software-properties-common \
+    apt-transport-https ca-certificates gnupg lsb-release \
+    && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt update && add-apt-repository ppa:ubuntu-toolchain-r/test -y \
+RUN apt-get update && add-apt-repository ppa:ubuntu-toolchain-r/test -y \
     && apt install -y gcc-11 g++-11 libstdc++6 \
     && apt-get install -y locales \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+
 
 # Install newer libstdc++ for both system and conda
 RUN cd /tmp && \
@@ -45,7 +50,7 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git ${COMFY_DIR} && \
     cd ${COMFY_DIR} && \
     pip uninstall onnxruntime && \
     pip install --upgrade pip && \
-    pip install --upgrade mmengine opencv-python imgui-bundle pyav boto3 awscli librosa && \
+    pip install --upgrade mmengine opencv-python imgui-bundle pyav boto3 awscli librosa azure-storage-blob && \
     pip install -r requirements.txt && \
     pip uninstall -y onnxruntime-gpu && \
     pip install onnxruntime-gpu==1.20.1

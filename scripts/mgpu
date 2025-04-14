@@ -712,7 +712,7 @@ try:
             print(f'mkdir -p "{full_target_path}"')
             
             # Find all files in the source directory
-            source_files = glob.glob(f"{full_source_path}/*")
+            source_files = glob.glob(f'{full_source_path}/*')
             if not source_files:
                 print(f'WARNING: No files found in {full_source_path}')
                 continue
@@ -750,7 +750,7 @@ try:
             print(f'mkdir -p "{full_target_path}"')
             
             # Find all files in the source directory
-            source_files = glob.glob(f"{full_source_path}/*")
+            source_files = glob.glob(f'{full_source_path}/*')
             if not source_files:
                 print(f'WARNING: No files found in {full_source_path}')
                 continue
