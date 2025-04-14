@@ -89,6 +89,24 @@ validate_gpu_id() {
 
 # Function to show logs
 show_logs() {
+    # 2025-04-12 16:50: Updated to require service specification
+    local service_type=$1
+    local gpu_id=$2
+    shift 2  # Remove service_type and gpu_id from arguments
+    
+    # Validate service type
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
+    
     # Check if multitail is available
     if ! command -v multitail >/dev/null 2>&1; then
         log "ERROR: multitail is not installed. Please install it first."
@@ -98,175 +116,240 @@ show_logs() {
     # Define colors for each GPU
     local colors=("green" "yellow" "blue" "magenta" "cyan" "red" "white" "purple")
     
-        # If only one GPU is specified, use tail instead of multitail
-    if [ "$#" -eq 1 ] && [ "$1" != "all" ]; then
-        local gpu=$1
+    # Determine the directory prefix based on service type
+    local dir_prefix
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" = "comfyui" ]; then
+        dir_prefix="comfyui_gpu"
+    else
+        dir_prefix="a1111_gpu"
+    fi
+    
+    # If only one GPU is specified, use tail instead of multitail
+    if [ "$gpu_id" != "all" ]; then
         # Validate GPU number
-        if ! [[ "$gpu" =~ ^[0-9]+$ ]]; then
-            log "Error: Invalid GPU ID '$gpu'"
-            return 1
-        fi
-        if [ "$gpu" -ge "${NUM_GPUS:-0}" ]; then
-            log "Error: GPU ID '$gpu' is out of range"
+        if ! [[ "$gpu_id" =~ ^[0-9]+$ ]]; then
+            log "Error: Invalid GPU ID '$gpu_id'"
             return 1
         fi
         
-        local log_file="${ROOT}/comfyui_gpu${gpu}/logs/output.log"
+        # Validate GPU ID
+        validate_gpu_id "$gpu_id" >/dev/null || return 1
+        
+        local log_file="${ROOT}/${dir_prefix}${gpu_id}/logs/output.log"
         if [ -f "$log_file" ]; then
-            log "Starting log view for GPU $gpu (Ctrl+C to exit)"
-            tail -f "$log_file"
+            # Check if no-follow mode is requested
+            if [ "$1" = "-n" ] || [ "$1" = "no-follow" ]; then
+                log "Showing recent logs for $service_type on GPU $gpu_id"
+                tail -n 100 "$log_file"
+            else
+                log "Starting log view for $service_type on GPU $gpu_id (Ctrl+C to exit)"
+                tail -f "$log_file"
+            fi
             return 0
         else
-            log "ERROR: Log file not found for GPU $gpu"
+            log "ERROR: Log file not found for $service_type on GPU $gpu_id"
             return 1
         fi
     fi
     
-    # For multiple GPUs or 'all', use multitail
-    if ! command -v multitail >/dev/null 2>&1; then
-        log "ERROR: multitail is not installed. Please install it first."
-        return 1
-    fi
-
+    # For 'all', use multitail
     # Build the multitail command
     local cmd="multitail --mergeall -m 5000"  # 5000 lines of scroll buffer
+    local found_valid=false
+    local gpu_count
+    gpu_count=$(show_count)
     
-    if [ "$1" = "all" ]; then
-        # Show all available GPUs
-        for gpu in $(seq 0 $((NUM_GPUS-1))); do
-            local log_file="${ROOT}/comfyui_gpu${gpu}/logs/output.log"
-            if [ -f "$log_file" ]; then
-                local color_index=$((gpu % ${#colors[@]}))
-                cmd="$cmd -ci ${colors[$color_index]} --label \"GPU$gpu: \" $log_file"
-            fi
-        done
-    else
-        # Handle specific GPU numbers
-        local found_valid=false
-        for gpu in "$@"; do
-            # Validate GPU number
-            if ! [[ "$gpu" =~ ^[0-9]+$ ]]; then
-                log "Warning: Invalid GPU ID '$gpu'. Skipping..."
-                continue
-            fi
-            if [ "$gpu" -ge "${NUM_GPUS:-0}" ]; then
-                log "Warning: GPU ID '$gpu' is out of range. Skipping..."
-                continue
-            fi
-            
-            local log_file="${ROOT}/comfyui_gpu${gpu}/logs/output.log"
-            if [ -f "$log_file" ]; then
-                local color_index=$((gpu % ${#colors[@]}))
-                cmd="$cmd -ci ${colors[$color_index]} --label \"GPU$gpu: \" $log_file"
-                found_valid=true
-            else
-                log "Warning: Log file not found for GPU $gpu"
-            fi
-        done
-        
-        if [ "$found_valid" = "false" ]; then
-            log "ERROR: No valid GPU logs found"
-            return 1
+    # Show all available GPUs
+    for ((i=0; i<gpu_count; i++)); do
+        local log_file="${ROOT}/${dir_prefix}${i}/logs/output.log"
+        if [ -f "$log_file" ]; then
+            local color_index=$((i % ${#colors[@]}))
+            cmd="$cmd -ci ${colors[$color_index]} --label \"$service_type GPU$i: \" $log_file"
+            found_valid=true
         fi
-    fi
+    done
     
-    if [ "$cmd" = "multitail --mergeall -m 5000" ]; then
-        log "ERROR: No log files found"
+    if [ "$found_valid" = "false" ]; then
+        log "ERROR: No valid $service_type GPU logs found"
         return 1
     fi
     
     # Execute the multitail command
-    log "Starting log view (Press 'b' to scroll, 'q' to exit scroll mode, Ctrl+C to exit)"
+    log "Starting log view for all $service_type services (Press 'b' to scroll, 'q' to exit scroll mode, Ctrl+C to exit)"
     eval "$cmd"
 }
 
 # Function to start a specific GPU service
 start_service() {
-    local gpu_id=$1
+    local service_type=$1
+    local gpu_id=$2
+    
+    # 2025-04-12 16:40: Updated to require service specification
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    # Validate service type
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
     
     if [ "$gpu_id" = "all" ]; then
-        start_all_services
+        start_all_services "$service_type"
         return $?
     fi
     
-    log "Starting service for GPU $gpu_id..."
+    log "Starting $service_type service for GPU $gpu_id..."
     # Pass test_gpus as third parameter if MOCK_GPU is set
     if [ "${MOCK_GPU:-0}" -eq 1 ]; then
-        service comfyui start "$gpu_id" "1" || return 1
+        service "$service_type" start "$gpu_id" "1" || return 1
     else
-        service comfyui start "$gpu_id" || return 1
+        service "$service_type" start "$gpu_id" || return 1
     fi
 }
 
 # Function to start all GPU services
 start_all_services() {
-    log "Starting all GPU services..."
-    local failed=0
-    for gpu in $(seq 0 $((NUM_GPUS-1))); do
-        # Pass test_gpus as third parameter if MOCK_GPU is set
-        if [ "${MOCK_GPU:-0}" -eq 1 ]; then
-            start_service "$gpu" || failed=1
-        else
-            start_service "$gpu" || failed=1
-        fi
+    # 2025-04-12 16:41: Updated to support service type parameter
+    local service_type=$1
+    
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    log "Starting all $service_type services..."
+    local gpu_count
+    gpu_count=$(show_count)
+    
+    for ((i=0; i<gpu_count; i++)); do
+        start_service "$service_type" "$i"
     done
-    return $failed
+    
+    log "All $service_type services started"
+    return 0
 }
 
 # Function to stop a specific GPU service
 stop_service() {
-    local gpu_id=$1
+    # 2025-04-12 16:42: Updated to require service specification
+    local service_type=$1
+    local gpu_id=$2
+    
+    # Validate service type
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
     
     if [ "$gpu_id" = "all" ]; then
-        stop_all_services
+        stop_all_services "$service_type"
         return
     fi
     
     # Validate GPU ID first (only once)
     validate_gpu_id "$gpu_id" >/dev/null || return 1
     
-    log "Stopping service for GPU $gpu_id..."
-    service comfyui stop "$gpu_id"
+    log "Stopping $service_type service for GPU $gpu_id..."
+    service "$service_type" stop "$gpu_id"
 }
 
 # Internal function to stop a service
 stop_service_internal() {
-    local gpu_id=$1
-    service comfyui stop "$gpu_id"
+    # 2025-04-12 16:42: Updated to require service specification
+    local service_type=$1
+    local gpu_id=$2
+    service "$service_type" stop "$gpu_id"
 }
 
 # Function to stop all GPU services
 stop_all_services() {
+    # 2025-04-12 16:42: Updated to require service specification
+    local service_type=$1
+    
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    log "Stopping all $service_type services..."
     local failed=0
-    for gpu in $(seq 0 $((NUM_GPUS-1))); do
-        if ! stop_service "$gpu"; then
+    local gpu_count
+    gpu_count=$(show_count)
+    
+    for ((i=0; i<gpu_count; i++)); do
+        if ! stop_service "$service_type" "$i"; then
             failed=1
         fi
     done
+    
+    log "All $service_type services stopped"
     return $failed
 }
 
 ## Function to restart a specific GPU service
 restart_service() {
-    local gpu_id=$1
+    # 2025-04-12 16:43: Updated to require service specification
+    local service_type=$1
+    local gpu_id=$2
+    
+    # Validate service type
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
     
     if [ "$gpu_id" = "all" ]; then
-        restart_all_services
+        restart_all_services "$service_type"
         return
     fi
     
     # Validate GPU ID first (only once)
     validate_gpu_id "$gpu_id" >/dev/null || return 1
     
-    log "Restarting service for GPU $gpu_id..."
-    service comfyui restart "$gpu_id"
+    log "Restarting $service_type service for GPU $gpu_id..."
+    service "$service_type" restart "$gpu_id"
 }
 
 # Function to restart all GPU services
 restart_all_services() {
+    # 2025-04-12 16:43: Updated to require service specification
+    local service_type=$1
+    
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    log "Restarting all $service_type services..."
     local failed=0
-    for gpu in $(seq 0 $((NUM_GPUS-1))); do
-        if ! restart_service "$gpu"; then
+    local gpu_count
+    gpu_count=$(show_count)
+    
+    for ((i=0; i<gpu_count; i++)); do
+        if ! restart_service "$service_type" "$i"; then
             failed=1
         fi
     done
@@ -275,65 +358,130 @@ restart_all_services() {
 
 # Function to check status of a specific GPU service
 check_status() {
-    local gpu_id=$1
+    # 2025-04-12 16:45: Updated to require service specification
+    local service_type=$1
+    local gpu_id=$2
+    
+    # Validate service type
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
     
     if [ "$gpu_id" = "all" ]; then
-        check_all_status
+        check_all_status "$service_type"
         return $?
     fi
     
     # Validate GPU ID first (only once)
     validate_gpu_id "$gpu_id" >/dev/null || return 1
     
-    # Capture the output of comfyui status
+    # Capture the output of service status
     local status_output
-    status_output=$(service comfyui status "$gpu_id" 2>&1)
+    status_output=$(service "$service_type" status "$gpu_id" 2>&1)
     local exit_code=$?
     
     # Extract status from the output (matches "Service is running" or "Service is not running")
     if echo "$status_output" | grep -q "Service is running"; then
-        printf "GPU %d: %s\n" "$gpu_id" "$(echo "$status_output" | grep "Service is" | sed "s/\[.*\] //")"
+        printf "%s GPU %d: %s\n" "$service_type" "$gpu_id" "$(echo "$status_output" | grep "Service is" | sed "s/\[.*\] //")"
         return 0
     else
-        printf "GPU %d: %s\n" "$gpu_id" "$(echo "$status_output" | grep "Service is" | sed "s/\[.*\] //")"
+        printf "%s GPU %d: %s\n" "$service_type" "$gpu_id" "$(echo "$status_output" | grep "Service is" | sed "s/\[.*\] //")"
         return $exit_code
     fi
 }
 
 # Function to check status of all GPU services
 check_all_status() {
+    # 2025-04-12 16:45: Updated to require service specification
+    local service_type=$1
+    
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    log "Checking status of all $service_type services..."
     local failed=0
-    for gpu in $(seq 0 $((NUM_GPUS-1))); do
-        if ! check_status "$gpu"; then
+    local gpu_count
+    gpu_count=$(show_count)
+    
+    for ((i=0; i<gpu_count; i++)); do
+        if ! check_status "$service_type" "$i"; then
             failed=1
         fi
     done
     return $failed
 }
 
-# Function to setup ComfyUI for a specific GPU or CPU
+# Function to setup a service (ComfyUI or Automatic1111) for a specific GPU or CPU
 setup_gpu() {
-    local gpu_id=$1
+    # 2025-04-12 16:47: Updated to support both ComfyUI and Automatic1111
+    local service_type=$1
+    local gpu_id=$2
     local target_dir
     
-    if [ "$gpu_id" = "all" ]; then
-        setup_all_gpus
-        return $?
-    else
-        target_dir="${ROOT}/comfyui_gpu${gpu_id}"
+    # Validate service type
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
     fi
     
-    log "Setting up ComfyUI for ${gpu_id}..."
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" != "comfyui" ] && [ "$service_type" != "a1111" ]; then
+        log "ERROR: Invalid service type: $service_type. Must be 'comfyui' or 'a1111'"
+        return 1
+    fi
+    
+    if [ "$gpu_id" = "all" ]; then
+        setup_all_gpus "$service_type"
+        return $?
+    fi
+    
+    # Set target directory based on service type
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" = "comfyui" ]; then
+        target_dir="${ROOT}/comfyui_gpu${gpu_id}"
+    else
+        target_dir="${ROOT}/a1111_gpu${gpu_id}"
+    fi
+    
+    log "Setting up $service_type for GPU ${gpu_id}..."
     
     # Create directory if it doesn't exist
     mkdir -p "$target_dir"
     chmod 755 "$target_dir"
     
+    # Setup based on service type
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    if [ "$service_type" = "comfyui" ]; then
+        setup_comfyui "$gpu_id" "$target_dir"
+    else
+        setup_a1111 "$gpu_id" "$target_dir"
+    fi
+    
+    return $?
+}
+
+# Function to setup ComfyUI for a specific GPU
+setup_comfyui() {
+    local gpu_id=$1
+    local target_dir=$2
+    
     # Use COMFY_REPO_URL environment variable with fallback
     local repo_url="${COMFY_REPO_URL:-https://github.com/comfyanonymous/ComfyUI.git}"
     local base_commit="0c04a6ae780b5eefb1a701467439ae1235607a4f"
     
-    log "Cloning ComfyUI from ${repo_url} for ${gpu_id}..."
+    log "Cloning ComfyUI from ${repo_url} for GPU ${gpu_id}..."
     if ! git clone "$repo_url" "$target_dir"; then
         log "ERROR: Failed to clone ComfyUI"
         return 1
@@ -369,9 +517,6 @@ setup_gpu() {
         return 1
     fi
     
-    log "Setup complete for ${gpu_id}"
-
-    
     # Handle workflows directory
     if [ -d "${target_dir}/user/default/workflows" ]; then
         log "Removing existing workflows directory..."
@@ -388,30 +533,302 @@ setup_gpu() {
         ln -s "/workspace/shared/workflows" "${target_dir}/user/default/workflows"
     fi
     
+    log "ComfyUI setup complete for GPU ${gpu_id}"
+    return 0
+}
+
+# Function to setup Automatic1111 for a specific GPU
+setup_a1111() {
+    # 2025-04-12 20:27: Enhanced setup function for Automatic1111 with better logging, error handling, and symbolic link creation
+    local gpu_id=$1
+    local target_dir=$2
+    
+    log "DEBUG: Setting up Automatic1111 for GPU ${gpu_id} in directory ${target_dir}"
+    
+    # Check if target directory exists
+    if [ ! -d "$target_dir" ]; then
+        log "Creating target directory: $target_dir"
+        mkdir -p "$target_dir" || {
+            log "ERROR: Failed to create directory $target_dir"
+            return 1
+        }
+    fi
+    
+    # Use A1111_REPO_URL environment variable with fallback
+    local repo_url="${A1111_REPO_URL:-https://github.com/AUTOMATIC1111/stable-diffusion-webui.git}"
+    
+    log "Cloning Automatic1111 from ${repo_url} for GPU ${gpu_id}..."
+    log "DEBUG: Running git clone command: git clone $repo_url $target_dir"
+    
+    # Check if git is installed
+    if ! command -v git >/dev/null 2>&1; then
+        log "ERROR: git command not found. Please install git."
+        return 1
+    fi
+    
+    # Check if directory is empty or already contains the repository
+    if [ "$(ls -A "$target_dir" 2>/dev/null)" ]; then
+        log "WARNING: Target directory $target_dir is not empty"
+        
+        # Check if it's already a git repository
+        if [ -d "$target_dir/.git" ]; then
+            log "Git repository already exists in $target_dir, attempting to update"
+            
+            # Try to update the repository
+            (cd "$target_dir" && git pull) || {
+                log "ERROR: Failed to update existing repository"
+                return 1
+            }
+        else
+            log "ERROR: Target directory $target_dir is not empty and not a git repository"
+            log "DEBUG: Directory contents: $(ls -la "$target_dir")"
+            return 1
+        fi
+    else
+        # Clone the repository
+        if ! git clone "$repo_url" "$target_dir" 2>&1 | tee -a "${ROOT}/logs/git_clone.log"; then
+            log "ERROR: Failed to clone Automatic1111 from $repo_url"
+            log "DEBUG: Check ${ROOT}/logs/git_clone.log for details"
+            return 1
+        fi
+        log "Successfully cloned Automatic1111 repository"
+    fi
+    
+    # Create logs directory
+    log "Creating logs directory in ${target_dir}/logs"
+    mkdir -p "${target_dir}/logs" || {
+        log "ERROR: Failed to create logs directory"
+        return 1
+    }
+    chmod 755 "${target_dir}/logs"
+    touch "${target_dir}/logs/output.log"
+    chmod 644 "${target_dir}/logs/output.log"
+    
+    # Verify setup
+    log "Verifying Automatic1111 setup..."
+    if [ ! -f "${target_dir}/webui.py" ]; then
+        log "ERROR: Setup failed - webui.py not found in $target_dir"
+        log "DEBUG: Directory contents: $(ls -la "$target_dir")"
+        return 1
+    fi
+    
+    # 2025-04-13 11:34: Make webui.sh executable
+    log "Making webui.sh executable..."
+    if [ -f "${target_dir}/webui.sh" ]; then
+        chmod +x "${target_dir}/webui.sh" || {
+            log "WARNING: Failed to make webui.sh executable"
+        }
+    else
+        log "WARNING: webui.sh not found in $target_dir"
+    fi
+    
+    # 2025-04-13 11:34: Create webui-user.sh to disable venv
+    log "Creating webui-user.sh to disable virtual environment..."
+    cat > "${target_dir}/webui-user.sh" << 'EOF'
+#!/bin/bash
+# 2025-04-13 11:34: Custom configuration for Automatic1111
+
+# Disable virtual environment
+venv_dir="-"
+
+# Skip torch/cuda tests
+export SKIP_TORCH_CUDA_TEST=1
+
+# Don't reinstall existing packages
+export PIP_IGNORE_INSTALLED=1
+
+# Skip model download
+export COMMANDLINE_ARGS="--skip-torch-cuda-test --skip-python-version-check"
+EOF
+    
+    # Make webui-user.sh executable
+    chmod +x "${target_dir}/webui-user.sh" || {
+        log "WARNING: Failed to make webui-user.sh executable"
+    }
+    
+    # Create symbolic links based on YAML configuration
+    log "Creating symbolic links from shared directories..."
+    create_symbolic_links_from_yaml "$target_dir"
+    
+    log "Automatic1111 setup complete for GPU ${gpu_id}"
+    return 0
+}
+
+# Function to create symbolic links based on YAML configuration
+create_symbolic_links_from_yaml() {
+    # 2025-04-13 21:05: Updated function to create symbolic links for contents of directories
+    local target_dir=$1
+    local config_file="${ROOT}/shared/a1111_dir_config.yaml"
+    
+    # Check if config file exists
+    if [ ! -f "$config_file" ]; then
+        log "ERROR: Configuration file $config_file not found"
+        return 1
+    fi
+    
+    log "Using configuration file: $config_file"
+    
+    # Use Python to parse the YAML file and generate symbolic link commands
+    python3 -c "
+# 2025-04-13 21:05: Python script to parse YAML configuration and create symbolic links for contents of directories
+import yaml
+import os
+import sys
+import glob
+
+try:
+    # Load YAML configuration
+    with open('$config_file', 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Get automatic1111 configuration
+    a1111_config = config.get('automatic1111', {})
+    if not a1111_config:
+        print('ERROR: No automatic1111 configuration found in $config_file')
+        sys.exit(1)
+    
+    # Get base path
+    base_path = a1111_config.get('base_path', '/workspace/shared')
+    
+    # Process model directories
+    models_config = a1111_config.get('models', {})
+    for model_type, mapping in models_config.items():
+        if '->' in mapping:
+            source_path, target_path = mapping.split('->')
+            source_path = source_path.strip()
+            target_path = target_path.strip()
+            
+            # Create full paths
+            full_source_path = os.path.join(base_path, source_path)
+            full_target_path = os.path.join('$target_dir', target_path)
+            
+            # Remove trailing slashes for consistency
+            if full_source_path.endswith('/'):
+                full_source_path = full_source_path[:-1]
+            if full_target_path.endswith('/'):
+                full_target_path = full_target_path[:-1]
+            
+            # Create the target directory if it doesn't exist
+            print(f'mkdir -p "{full_target_path}"')
+            
+            # Find all files in the source directory
+            source_files = glob.glob(f"{full_source_path}/*")
+            if not source_files:
+                print(f'WARNING: No files found in {full_source_path}')
+                continue
+                
+            # Create symbolic links for each file in the source directory
+            for source_file in source_files:
+                file_name = os.path.basename(source_file)
+                target_file = os.path.join(full_target_path, file_name)
+                
+                # Remove existing file if it exists
+                print(f'rm -f "{target_file}"')
+                
+                # Create symbolic link for the file
+                print(f'ln -sf "{source_file}" "{target_file}"')
+    
+    # Process other directories
+    directories_config = a1111_config.get('directories', {})
+    for dir_type, mapping in directories_config.items():
+        if '->' in mapping:
+            source_path, target_path = mapping.split('->')
+            source_path = source_path.strip()
+            target_path = target_path.strip()
+            
+            # Create full paths
+            full_source_path = os.path.join(base_path, source_path)
+            full_target_path = os.path.join('$target_dir', target_path)
+            
+            # Remove trailing slashes for consistency
+            if full_source_path.endswith('/'):
+                full_source_path = full_source_path[:-1]
+            if full_target_path.endswith('/'):
+                full_target_path = full_target_path[:-1]
+            
+            # Create the target directory if it doesn't exist
+            print(f'mkdir -p "{full_target_path}"')
+            
+            # Find all files in the source directory
+            source_files = glob.glob(f"{full_source_path}/*")
+            if not source_files:
+                print(f'WARNING: No files found in {full_source_path}')
+                continue
+                
+            # Create symbolic links for each file in the source directory
+            for source_file in source_files:
+                file_name = os.path.basename(source_file)
+                target_file = os.path.join(full_target_path, file_name)
+                
+                # Remove existing file if it exists
+                print(f'rm -f "{target_file}"')
+                
+                # Create symbolic link for the file
+                print(f'ln -sf "{source_file}" "{target_file}"')
+            
+except Exception as e:
+    print(f'ERROR: Failed to parse YAML configuration: {str(e)}')
+    sys.exit(1)
+" | while read -r cmd; do
+        if [[ "$cmd" == ERROR:* ]]; then
+            log "$cmd"
+            return 1
+        elif [[ "$cmd" == WARNING:* ]]; then
+            log "$cmd"
+        else
+            log "Executing: $cmd"
+            eval "$cmd" || {
+                log "ERROR: Failed to execute command: $cmd"
+                # Continue even if a single command fails
+                # return 1
+            }
+        fi
+    done
+    
+    log "Symbolic links created successfully"
     return 0
 }
 
 # Function to setup all GPU directories
 setup_all_gpus() {
+    # 2025-04-12 16:48: Updated to require service specification
+    local service_type=$1
+    
+    if [ -z "$service_type" ]; then
+        # 2025-04-12 17:52: Updated service name from comfy to comfyui
+        log "ERROR: Service type (comfyui or a1111) must be specified"
+        return 1
+    fi
+    
+    log "Setting up $service_type for all GPUs..."
     local failed=0
-    for gpu in $(seq 0 $((NUM_GPUS-1))); do
-        setup_gpu "$gpu" || failed=1
+    local gpu_count
+    gpu_count=$(show_count)
+    
+    for ((i=0; i<gpu_count; i++)); do
+        setup_gpu "$service_type" "$i" || failed=1
     done
     return $failed
 }
 
 # Show usage information
 show_usage() {
+    # 2025-04-12 16:48: Updated to include service type in usage
     cat << EOF
-Usage: $0 COMMAND [gpu_id] [options]
+Usage: $0 SERVICE COMMAND [gpu_id] [options]
+
+Services:
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    comfyui                ComfyUI service
+    a1111                 Automatic1111 service
 
 Commands:
-    start   [gpu_id]       Start ComfyUI service for GPU
-    stop    [gpu_id]       Stop ComfyUI service for GPU
-    restart [gpu_id]       Restart ComfyUI service for GPU
-    status  [gpu_id]       Show status of ComfyUI service for GPU
+    start   [gpu_id]       Start service for GPU
+    stop    [gpu_id]       Stop service for GPU
+    restart [gpu_id]       Restart service for GPU
+    status  [gpu_id]       Show status of service for GPU
     logs    [gpu_id] [-n]  Show logs for GPU (default: follow mode, -n for no-follow)
-    setup   [gpu_id]       Setup ComfyUI for GPU
+    setup   [gpu_id]       Setup service for GPU
     count                  Show number of available GPUs
 
 Arguments:
@@ -421,11 +838,14 @@ Options:
     -n, no-follow         For logs: show recent logs and exit (default: follow mode)
 
 Examples:
-    $0 start 0            Start ComfyUI on GPU 0
-    $0 start all          Start ComfyUI on all GPUs
-    $0 logs 0             Follow logs for GPU 0
-    $0 logs all           Follow logs for all GPUs
-    $0 logs 0 -n          Show recent logs for GPU 0 and exit
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    $0 comfyui start 0      Start ComfyUI on GPU 0
+    $0 a1111 start all     Start Automatic1111 on all GPUs
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    $0 comfyui logs 0       Follow ComfyUI logs for GPU 0
+    $0 a1111 logs all      Follow Automatic1111 logs for all GPUs
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    $0 comfyui logs 0 -n    Show recent ComfyUI logs for GPU 0 and exit
 EOF
 }
 
@@ -444,40 +864,68 @@ show_count() {
 }
 
 # Main command handling
+# 2025-04-12 16:48: Updated to require service type as first parameter
+if [ -z "$1" ]; then
+    show_usage
+    exit 1
+fi
+
 case "$1" in
-    start|stop|restart|status|logs|setup|count)
-        if [ -z "$2" ] && [ "$1" != "count" ]; then
+    # 2025-04-12 17:52: Updated service name from comfy to comfyui
+    comfyui|a1111)
+        service_type="$1"
+        shift  # Remove service type from arguments
+        
+        if [ -z "$1" ]; then
             show_usage
             exit 1
         fi
+        
         case "$1" in
-            start)
-                start_service "$2"
-                ;;
-            stop)
-                stop_service "$2"
-                ;;
-            restart)
-                restart_service "$2"
-                ;;
-            status)
-                check_status "$2"
+            start|stop|restart|status|setup)
+                if [ -z "$2" ]; then
+                    show_usage
+                    exit 1
+                fi
+                
+                case "$1" in
+                    start)
+                        start_service "$service_type" "$2"
+                        ;;
+                    stop)
+                        stop_service "$service_type" "$2"
+                        ;;
+                    restart)
+                        restart_service "$service_type" "$2"
+                        ;;
+                    status)
+                        check_status "$service_type" "$2"
+                        ;;
+                    setup)
+                        setup_gpu "$service_type" "$2"
+                        ;;
+                esac
                 ;;
             logs)
                 if [ -z "$2" ]; then
-                    show_logs "all"
+                    show_logs "$service_type" "all"
                 else
-                    shift  # Remove 'logs' from arguments
-                    show_logs "$@"  # Pass all remaining arguments to show_logs
+                    gpu_id="$2"
+                    shift 2  # Remove 'logs' and gpu_id from arguments
+                    show_logs "$service_type" "$gpu_id" "$@"  # Pass all remaining arguments to show_logs
                 fi
-                ;;
-            setup)
-                setup_gpu "$2"
                 ;;
             count)
                 show_count
                 ;;
+            *)
+                show_usage
+                exit 1
+                ;;
         esac
+        ;;
+    count)
+        show_count
         ;;
     *)
         show_usage

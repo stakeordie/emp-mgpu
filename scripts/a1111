@@ -65,7 +65,8 @@ log() {
 start() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/a1111_gpu${GPU_NUM}"
-    local PORT=$((3000 + GPU_NUM))
+    # 2025-04-12 17:42: Changed port from 3000 to 3100 to avoid conflict with nginx
+    local PORT=$((3100 + GPU_NUM))
     
     # Setup logs first
     setup_logs "$GPU_NUM"
@@ -84,10 +85,11 @@ start() {
         return 1
     }
     
+    # 2025-04-12 18:43: Fixed syntax error, changed } to fi
     if [ ! -f "webui.py" ]; then
         log "$GPU_NUM" "ERROR: webui.py not found in $WORK_DIR"
         return 1
-    }
+    fi
     
     # Ensure port is free
     if netstat -tuln | grep -q ":$PORT "; then
@@ -98,7 +100,8 @@ start() {
     log "$GPU_NUM" "Starting Automatic1111 service for GPU $GPU_NUM"
     
     # Build command with any additional args
-    local CMD="python webui.py --listen --port $PORT --api"
+    # 2025-04-13 11:27: Updated to use SKIP_VENV=1 environment variable instead of --skip-venv flag
+    local CMD="SKIP_VENV=1 ./webui.sh -f --listen --port $PORT --api --skip-torch-cuda-test"
     
     # Add mode-specific args
     log "$GPU_NUM" "A1111: Building command... GPU_NUM=$GPU_NUM MOCK_GPU=${MOCK_GPU:-0}"
@@ -106,8 +109,15 @@ start() {
         log "$GPU_NUM" "A1111: Adding --use-cpu all flag (Mock GPU mode)"
         CMD="$CMD --use-cpu all"
     else
-        log "$GPU_NUM" "A1111: Adding CUDA_VISIBLE_DEVICES=$GPU_NUM"
-        CMD="CUDA_VISIBLE_DEVICES=$GPU_NUM $CMD"
+        # Check if we have multiple GPUs
+        if [ "$NUM_GPUS" -gt 1 ]; then
+            # 2025-04-12 19:02: Added --device-id flag for multiple GPU scenarios
+            log "$GPU_NUM" "A1111: Adding CUDA_VISIBLE_DEVICES=$GPU_NUM and --device-id $GPU_NUM"
+            CMD="CUDA_VISIBLE_DEVICES=$GPU_NUM $CMD --device-id $GPU_NUM"
+        else
+            log "$GPU_NUM" "A1111: Adding CUDA_VISIBLE_DEVICES=$GPU_NUM"
+            CMD="CUDA_VISIBLE_DEVICES=$GPU_NUM $CMD"
+        fi
     fi
     
     # Add any additional args from A1111_ARGS
@@ -121,7 +131,7 @@ start() {
     fi
     
     log "$GPU_NUM" "A1111: Running command: $CMD"
-    PYTHONUNBUFFERED=1 eval "$CMD" >> "${WORK_DIR}/logs/output.log" 2>&1 &
+    cd "$WORK_DIR" && eval "$CMD" >> "${WORK_DIR}/logs/output.log" 2>&1 &
     
     echo $! > "${WORK_DIR}/a1111.pid"
     # Save mock state alongside PID
@@ -216,7 +226,8 @@ status() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/a1111_gpu${GPU_NUM}"
     local PID_FILE="${WORK_DIR}/a1111.pid"
-    local PORT=$((3000 + GPU_NUM))
+    # 2025-04-12 17:42: Changed port from 3000 to 3100 to avoid conflict with nginx
+    local PORT=$((3100 + GPU_NUM))
     
     if [ ! -f "$PID_FILE" ]; then
         log "$GPU_NUM" "Service is not running (no PID file)"

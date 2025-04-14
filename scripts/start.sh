@@ -97,6 +97,10 @@ main() {
     log_phase "8" "Setting up ComfyUI instances"
     setup_comfyui
     
+    # Phase 8.1: Setup Automatic1111 instances
+    log_phase "8.1" "Setting up Automatic1111 instances"
+    setup_a1111
+    
     # Phase 9: Setup service scripts
     log_phase "9" "Setting up service scripts"
     setup_service_scripts
@@ -108,6 +112,10 @@ main() {
     # Phase 11: Start ComfyUI services
     log_phase "11" "Starting ComfyUI services"
     start_comfyui
+    
+    # Phase 11.1: Start Automatic1111 services
+    log_phase "11.1" "Starting Automatic1111 services"
+    start_a1111
 
     # Start Langflow
     log_phase "12" "Starting Langflow"
@@ -248,10 +256,8 @@ check_env_vars() {
         log "CUT_PK_1, CUT_PK_2, and CUT_PK_3 environment variables set"
     fi
 
-    if [ ! -d "$COMFY_DIR" ]; then
-        log "ERROR: Working directory does not exist: $COMFY_DIR"
-        return 1
-    fi
+    # 2025-04-12 17:00: Removed COMFY_DIR existence check as it's not properly defined
+    # and we're handling multiple ComfyUI instances (one per GPU)
 
     if [ -z "$TEST_GPUS" ]; then
         log "TEST_GPUS is not set"
@@ -657,6 +663,7 @@ setup_nginx_auth() {
 }
 
 setup_comfyui() {
+    # 2025-04-12 17:18: Updated to use new mgpu command format with service type
     log "Setting up ComfyUI..."
 
     pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python-headless opencv-contrib-python && pip install opencv-python opencv-python-headless opencv-contrib-python-headless && pip install opencv-contrib-python
@@ -670,27 +677,99 @@ setup_comfyui() {
     fi
     
     # Setup GPU instances
-    log "Setting up GPU instances..."
-    if ! mgpu setup all; then
-        log "ERROR: Failed to set up GPU instances"
+    log "Setting up ComfyUI GPU instances..."
+    # 2025-04-12 17:53: Updated service name from comfy to comfyui
+    if ! mgpu comfyui setup all; then
+        log "ERROR: Failed to set up ComfyUI GPU instances"
         return 1
     fi
     
     # Start services
-    log "Starting GPU services..."
-    if ! mgpu start all; then
-        log "ERROR: Failed to start GPU services"
+    log "Starting ComfyUI GPU services..."
+    # 2025-04-12 17:53: Updated service name from comfy to comfyui
+    if ! mgpu comfyui start all; then
+        log "ERROR: Failed to start ComfyUI GPU services"
         return 1
     fi
     
     # Quick status check
-    log "Verifying services..."
-    mgpu status all >/dev/null || {
-        log "ERROR: Service verification failed"
+    log "Verifying ComfyUI services..."
+    # 2025-04-12 17:53: Updated service name from comfy to comfyui
+    mgpu comfyui status all >/dev/null || {
+        log "ERROR: ComfyUI service verification failed"
         return 1
     }
     
     log "ComfyUI setup complete"
+    return 0
+}
+
+install_a1111_dependencies() {
+    # 2025-04-12 19:23: Updated function to install all Automatic1111 dependencies from requirements.txt
+    log "Installing Automatic1111 dependencies..."
+    
+    # Get the working directory for GPU 0 (or the first instance)
+    local WORK_DIR="${ROOT}/a1111_gpu0"
+    
+    # Check if requirements.txt exists
+    if [ ! -f "${WORK_DIR}/requirements.txt" ]; then
+        log "ERROR: requirements.txt not found in ${WORK_DIR}"
+        return 1
+    fi
+    
+    # Install all dependencies from requirements.txt
+    log "Installing dependencies from requirements.txt..."
+    if pip install -r "${WORK_DIR}/requirements.txt"; then
+        log "Successfully installed all dependencies from requirements.txt"
+    else
+        log "ERROR: Failed to install dependencies from requirements.txt"
+        return 1
+    fi
+    
+    return 0
+}
+
+setup_a1111() {
+    # 2025-04-12 20:08: Updated setup function for Automatic1111 to fix order of operations
+    log "Setting up Automatic1111..."
+    
+    # Add --cpu flag in test mode
+    if [ "${MOCK_GPU:-0}" -eq 1 ]; then
+        log "Test mode: Adding --cpu flag to all instances"
+        export A1111_ARGS="--use-cpu all"
+    else
+        log "Setting up GPU mode with $NUM_GPUS GPUs"
+    fi
+    
+    # Setup GPU instances (clone repository) first
+    log "Setting up Automatic1111 GPU instances..."
+    if ! mgpu a1111 setup all; then
+        log "ERROR: Failed to set up Automatic1111 GPU instances"
+        return 1
+    fi
+    
+    # Now install dependencies after repository is cloned
+    log "Installing Automatic1111 dependencies..."
+    if ! install_a1111_dependencies; then
+        log "ERROR: Failed to install Automatic1111 dependencies"
+        return 1
+    fi
+    
+    # Start services
+    log "Starting Automatic1111 GPU services..."
+    if ! mgpu a1111 start all; then
+        log "ERROR: Failed to start Automatic1111 GPU services"
+        return 1
+    fi
+    
+    # Quick status check
+    log "Verifying Automatic1111 services..."
+    mgpu a1111 status all >/dev/null || {
+        log "ERROR: Automatic1111 service verification failed"
+        return 1
+    }
+    
+    log "Automatic1111 setup complete"
     return 0
 }
 
@@ -714,16 +793,34 @@ setup_service_scripts() {
 setup_services() {
     log "Setting up cron..."
     
-    # Setup and start cron if cleanup is needed
-    if [ -d "${COMFY_DIR}/output" ]; then
-        log "Setting up cleanup cron job..."
-        CRON_JOB="0 * * * * rm -f ${COMFY_DIR}/output/*"
-        (crontab -l 2>/dev/null | grep -v "$COMFY_DIR/output"; echo "$CRON_JOB") | crontab -
+    # 2025-04-12 17:00: Updated to setup cron jobs for all ComfyUI instances
+    log "Setting up cleanup cron jobs for ComfyUI instances..."
+    
+    # Remove any existing ComfyUI cleanup cron jobs
+    crontab -l 2>/dev/null | grep -v "/workspace/comfyui_gpu" > /tmp/current_cron
+    
+    # Setup cron jobs for each GPU's ComfyUI instance
+    local cron_jobs_setup=false
+    for gpu_num in $(seq 0 $((NUM_GPUS-1))); do
+        local comfy_dir="${ROOT}/comfyui_gpu${gpu_num}"
         
+        if [ -d "${comfy_dir}/output" ]; then
+            log "Setting up cleanup cron job for ComfyUI GPU ${gpu_num}..."
+            echo "0 * * * * rm -f ${comfy_dir}/output/*" >> /tmp/current_cron
+            cron_jobs_setup=true
+        fi
+    done
+    
+    # Install the new crontab
+    crontab /tmp/current_cron
+    rm /tmp/current_cron
+    
+    # Start cron service if any jobs were setup
+    if [ "$cron_jobs_setup" = "true" ]; then
         log "Starting cron service..."
         service cron start
     else
-        log "Output directory not found, skipping cron setup"
+        log "No ComfyUI output directories found, skipping cron setup"
     fi
 }
 
@@ -755,6 +852,7 @@ start_nginx() {
 }
 
 start_comfyui() {
+    # 2025-04-12 17:19: Updated to use new mgpu command format with service type
     log "Starting ComfyUI services..."
 
     pip uninstall -y onnxruntime-gpu
@@ -768,9 +866,11 @@ start_comfyui() {
         log "Setting up GPU mode with $NUM_GPUS GPUs"
     fi
     
-    if ! mgpu start all; then
+    # 2025-04-12 17:53: Updated service name from comfy to comfyui
+    if ! mgpu comfyui start all; then
         log "ERROR: Failed to start ComfyUI services"
-        mgpu status all 2>&1 | tail -n 5 | while read -r line; do log "  $line"; done
+        # 2025-04-12 17:53: Updated service name from comfy to comfyui
+        mgpu comfyui status all 2>&1 | tail -n 5 | while read -r line; do log "  $line"; done
         return 1
     fi
     
@@ -778,6 +878,35 @@ start_comfyui() {
     if ! verify_services; then
         return 1
     fi
+    
+    log "ComfyUI services started"
+    return 0
+}
+
+start_a1111() {
+    # 2025-04-12 17:20: Added function to start Automatic1111 services
+    log "Starting Automatic1111 services..."
+    
+    if [ "${MOCK_GPU:-0}" -eq 1 ]; then
+        log "Starting Automatic1111 in mock mode with $NUM_GPUS instances"
+        export A1111_ARGS="--use-cpu all"
+    else
+        log "Setting up GPU mode with $NUM_GPUS GPUs"
+    fi
+    
+    if ! mgpu a1111 start all; then
+        log "ERROR: Failed to start Automatic1111 services"
+        mgpu a1111 status all 2>&1 | tail -n 5 | while read -r line; do log "  $line"; done
+        return 1
+    fi
+    
+    # Check services
+    if ! verify_services; then
+        return 1
+    fi
+    
+    log "Automatic1111 services started"
+    return 0
 }
 
 log_phase() {
@@ -837,6 +966,7 @@ verify_services() {
     setup_auth
     
     # 2. Check ComfyUI Services
+    # 2025-04-12 17:34: Updated to use the new mgpu command format with service type
     if [ "${MOCK_GPU:-0}" -eq 1 ]; then
         log "Checking ComfyUI services in mock mode ($NUM_GPUS instances)..."
     else
@@ -844,20 +974,22 @@ verify_services() {
     fi
 
     for instance in $(seq 0 $((NUM_GPUS-1))); do
-        log "Checking instance $instance..."
+        log "Checking ComfyUI instance $instance..."
         
         # Check service
-        if ! mgpu status "$instance" | grep -q "running"; then
+        # 2025-04-12 17:53: Updated service name from comfy to comfyui
+        if ! mgpu comfyui status "$instance" | grep -q "running"; then
             log "ERROR: ComfyUI service for instance $instance is not running"
-            mgpu status "$instance" 2>&1 | while read -r line; do log "  $line"; done
+            # 2025-04-12 17:53: Updated service name from comfy to comfyui
+            mgpu comfyui status "$instance" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
             continue
         fi
         
         # Check proxy port
-        local proxy_port=$((3188 + instance))
+        local proxy_port=$((8188 + instance))
         if ! netstat -tuln | grep -q ":$proxy_port "; then
-            log "ERROR: NGINX proxy port $proxy_port is not listening"
+            log "ERROR: ComfyUI port $proxy_port is not listening"
             log "Current listening ports:"
             netstat -tuln | while read -r line; do log "  $line"; done
             all_services_ok=false
@@ -867,37 +999,103 @@ verify_services() {
         local log_dir="${ROOT}/comfyui_gpu${instance}/logs/output.log"
         
         if [ ! -f "$log_dir" ]; then
-            log "ERROR: Missing log file: $log_dir"
+            log "ERROR: Missing ComfyUI log file: $log_dir"
             all_services_ok=false
         else
-            log "=== Last 5 lines of $log_dir ==="
+            log "=== Last 5 lines of ComfyUI log for GPU $instance ==="
             tail -n 5 "$log_dir" | while read -r line; do log "  $line"; done
         fi
         
         # Try a test request
-        if ! make_auth_request "http://localhost:$proxy_port/system_stats"; then
+        if ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:$proxy_port/system_stats" | grep -q "200"; then
             log "ERROR: ComfyUI instance $instance is not responding to requests"
             log "Curl verbose output:"
-            make_auth_request "http://localhost:$proxy_port/system_stats" "verbose" 2>&1 | while read -r line; do log "  $line"; done
+            curl -v "http://localhost:$proxy_port/system_stats" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
+        else
+            log "ComfyUI instance $instance is responding to requests"
+        fi
+    done
+    
+    # 2.1 Check Automatic1111 Services
+    # 2025-04-12 17:34: Added check for Automatic1111 services
+    if [ "${MOCK_GPU:-0}" -eq 1 ]; then
+        log "Checking Automatic1111 services in mock mode ($NUM_GPUS instances)..."
+    else
+        log "Checking Automatic1111 services in GPU mode ($NUM_GPUS GPUs)..."
+    fi
+
+    for instance in $(seq 0 $((NUM_GPUS-1))); do
+        log "Checking Automatic1111 instance $instance..."
+        
+        # Check service
+        if ! mgpu a1111 status "$instance" | grep -q "running"; then
+            log "ERROR: Automatic1111 service for instance $instance is not running"
+            mgpu a1111 status "$instance" 2>&1 | while read -r line; do log "  $line"; done
+            all_services_ok=false
+            continue
+        fi
+        
+        # Check proxy port
+        # 2025-04-12 17:43: Changed port from 3000 to 3100 to avoid conflict with nginx
+        local proxy_port=$((3100 + instance))
+        if ! netstat -tuln | grep -q ":$proxy_port "; then
+            log "ERROR: Automatic1111 port $proxy_port is not listening"
+            log "Current listening ports:"
+            netstat -tuln | while read -r line; do log "  $line"; done
+            all_services_ok=false
+        fi
+        
+        # Check logs
+        local log_dir="${ROOT}/a1111_gpu${instance}/logs/output.log"
+        
+        if [ ! -f "$log_dir" ]; then
+            log "ERROR: Missing Automatic1111 log file: $log_dir"
+            all_services_ok=false
+        else
+            log "=== Last 5 lines of Automatic1111 log for GPU $instance ==="
+            tail -n 5 "$log_dir" | while read -r line; do log "  $line"; done
+        fi
+        
+        # Try a test request
+        # 2025-04-12 17:43: Updated port in API test URL
+        if ! curl -s -o /dev/null -w "%{http_code}" "http://localhost:$proxy_port/" | grep -q "200"; then
+            log "ERROR: Automatic1111 instance $instance is not responding to requests"
+            log "Curl verbose output:"
+            curl -v "http://localhost:$proxy_port/" 2>&1 | while read -r line; do log "  $line"; done
+            all_services_ok=false
+        else
+            log "Automatic1111 instance $instance is responding to requests"
         fi
     done
     
     # 3. Final Summary
+    # 2025-04-12 17:34: Updated to include Automatic1111 status in summary
     log "=== Service Status Summary ==="
     log "NGINX: $(service nginx status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
     log "Langflow: $(service langflow status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
     
     for instance in $(seq 0 $((NUM_GPUS-1))); do
-        local service_status=$(mgpu status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
-        local proxy_port=$((3188 + instance))
-        local proxy_status=$(netstat -tuln | grep -q ":$proxy_port " && echo "LISTENING" || echo "NOT LISTENING")
-        local api_status=$(make_auth_request "http://localhost:$proxy_port/system_stats" && echo "RESPONDING" || echo "NOT RESPONDING")
+        # ComfyUI status
+        # 2025-04-12 17:53: Updated service name from comfy to comfyui
+        local comfy_service_status=$(mgpu comfyui status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        local comfy_port=$((8188 + instance))
+        local comfy_port_status=$(netstat -tuln | grep -q ":$comfy_port " && echo "LISTENING" || echo "NOT LISTENING")
+        local comfy_api_status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$comfy_port/system_stats" | grep -q "200" && echo "RESPONDING" || echo "NOT RESPONDING")
+        
+        # Automatic1111 status
+        # 2025-04-12 17:43: Changed port from 3000 to 3100 to avoid conflict with nginx
+        local a1111_service_status=$(mgpu a1111 status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        local a1111_port=$((3100 + instance))
+        local a1111_port_status=$(netstat -tuln | grep -q ":$a1111_port " && echo "LISTENING" || echo "NOT LISTENING")
+        local a1111_api_status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$a1111_port/" | grep -q "200" && echo "RESPONDING" || echo "NOT RESPONDING")
         
         if [ "${MOCK_GPU:-0}" -eq 1 ]; then
-            log "ComfyUI Mock Instance $instance: Service: $service_status, Proxy: $proxy_status, API: $api_status"
+            log "ComfyUI Mock Instance $instance: Service: $comfy_service_status, Port: $comfy_port_status, API: $comfy_api_status"
+            log "Automatic1111 Mock Instance $instance: Service: $a1111_service_status, Port: $a1111_port_status, API: $a1111_api_status"
         else
-            log "ComfyUI GPU $instance: Service: $service_status, Proxy: $proxy_status, API: $api_status"
+            log "ComfyUI GPU $instance: Service: $comfy_service_status, Port: $comfy_port_status, API: $comfy_api_status"
+            log "Automatic1111 GPU $instance: Service: $a1111_service_status, Port: $a1111_port_status, API: $a1111_api_status"
         fi
         
         # Also report worker status
@@ -933,12 +1131,13 @@ verify_services() {
     fi
     
     # Check Redis Workers
+    # 2025-04-12 17:02: Updated to use wgpu CLI correctly
     log "Checking Redis Workers..."
-    if ! empredis-mgr status all; then
+    if ! wgpu status all; then
         log "ERROR: One or more Redis Worker instances are not running"
         all_services_ok=false
     else
-        log "Redis Workers: All instances reported running by empredis-mgr."
+        log "Redis Workers: All instances reported running by wgpu script."
         
         # Check worker logs for connection status
         for instance in $(seq 0 $((NUM_GPUS-1))); do

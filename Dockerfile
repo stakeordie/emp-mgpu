@@ -77,14 +77,19 @@ FROM langflow AS end
 ARG COMFY_REPO_URL=https://github.com/comfyanonymous/ComfyUI.git
 ENV COMFY_REPO_URL=${COMFY_REPO_URL}
 
-# Copy init.d script
+# Copy init.d scripts
 COPY scripts/comfyui /etc/init.d/comfyui
+# 2025-04-12 18:38: Added a1111 init.d script
+COPY scripts/a1111 /etc/init.d/a1111
 
-RUN chmod +x /etc/init.d/comfyui && \
-    update-rc.d comfyui defaults
+RUN chmod +x /etc/init.d/comfyui /etc/init.d/a1111 && \
+    update-rc.d comfyui defaults && \
+    update-rc.d a1111 defaults
 
+# 2025-04-12 18:37: Added a1111 script to /usr/local/bin
 COPY ./scripts/mgpu /usr/local/bin/mgpu
-RUN chmod +x /usr/local/bin/mgpu
+COPY ./scripts/a1111 /usr/local/bin/a1111
+RUN chmod +x /usr/local/bin/mgpu /usr/local/bin/a1111
 
 # >>> ADDED FOR EMP-REDIS-WORKER
 COPY scripts/worker /etc/init.d/worker
