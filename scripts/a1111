@@ -19,6 +19,18 @@ if [ "${MOCK_GPU:-0}" = "1" ]; then
     export A1111_ARGS="--use-cpu all"
 fi
 
+# [2025-04-15T16:25:23-04:00] Function to load environment variables from env.sh
+load_environment_variables() {
+    local GPU_NUM=$1
+    
+    if [ -f "/etc/profile.d/env.sh" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [GPU $GPU_NUM] Loading environment variables from /etc/profile.d/env.sh"
+        source "/etc/profile.d/env.sh"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [GPU $GPU_NUM] WARNING: Environment file /etc/profile.d/env.sh not found"
+    fi
+}
+
 # Setup logging
 setup_logs() {
     local GPU_NUM=$1
@@ -65,11 +77,29 @@ log() {
 start() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/a1111_gpu${GPU_NUM}"
-    # 2025-04-12 17:42: Changed port from 3000 to 3100 to avoid conflict with nginx
-    local PORT=$((3100 + GPU_NUM))
+    # [2025-04-15T17:17:42-04:00] Use WORKER_BASE_A1111_PORT + GPU_NUM for port calculation
+    local BASE_PORT="${WORKER_BASE_A1111_PORT:-3001}"
+    local PORT=$((BASE_PORT + GPU_NUM))
+    
+    # Log which base port is being used
+    if [ -n "${WORKER_BASE_A1111_PORT}" ]; then
+        log "$GPU_NUM" "Using WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT} for port calculation: $PORT"
+    else
+        log "$GPU_NUM" "WORKER_BASE_A1111_PORT not set, using default base port 3001: $PORT"
+    fi
     
     # Setup logs first
     setup_logs "$GPU_NUM"
+    
+    # [2025-04-15T16:25:23-04:00] Load environment variables before starting service
+    load_environment_variables "$GPU_NUM"
+    
+    # Prevent model downloads if STORAGE_TEST_MODE=true [2025-04-15T09:07:48-04:00]
+    if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
+        log "$GPU_NUM" "STORAGE_TEST_MODE=true: Skipping model download and blocking any model auto-download logic."
+        log "$GPU_NUM" "If models are missing, service may not function fully. No download will be attempted."
+        # Proceed with service start, but do NOT trigger any model download logic
+    fi
     
     # Check if already running
     if [ -f "${WORK_DIR}/a1111.pid" ] && kill -0 "$(cat "${WORK_DIR}/a1111.pid")" 2>/dev/null; then
@@ -100,44 +130,14 @@ start() {
     log "$GPU_NUM" "Starting Automatic1111 service for GPU $GPU_NUM"
     
     # Build command with any additional args
-    # 2025-04-14 12:35:00-04:00: Updated to create and use a custom virtual environment
-    
-    # Setup virtual environment if it doesn't exist
-    local VENV_DIR="${A1111_DIR}/venv_custom"
-    if [ ! -d "$VENV_DIR" ]; then
-        log "$GPU_NUM" "Creating custom virtual environment at $VENV_DIR"
-        cd "$A1111_DIR" || { log "$GPU_NUM" "ERROR: Cannot cd to $A1111_DIR"; return 1; }
-        python3 -m venv "$VENV_DIR"
-        
-        # Activate virtual environment and install requirements
-        source "$VENV_DIR/bin/activate"
-        
-        # Upgrade pip
-        log "$GPU_NUM" "Upgrading pip in virtual environment"
-        "$VENV_DIR/bin/pip" install --upgrade pip
-        
-        # Install PyTorch from system
-        log "$GPU_NUM" "Installing PyTorch from system to virtual environment"
-        "$VENV_DIR/bin/pip" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-        
-        # Install requirements
-        if [ -f "$A1111_DIR/requirements_versions.txt" ]; then
-            log "$GPU_NUM" "Installing requirements from requirements_versions.txt"
-            "$VENV_DIR/bin/pip" install -r "$A1111_DIR/requirements_versions.txt"
-        else
-            log "$GPU_NUM" "Installing requirements from requirements.txt"
-            "$VENV_DIR/bin/pip" install -r "$A1111_DIR/requirements.txt"
-        fi
-
-        deactivate
-        
-        log "$GPU_NUM" "Virtual environment setup complete"
-    else
-        log "$GPU_NUM" "Using existing virtual environment at $VENV_DIR"
-    fi
+    # 2025-04-14T20:47:00-04:00: Removed duplicate setup logic that's now in mgpu's setup_a1111 function
+    # All one-time setup is now done during the initial setup phase, not during service start
     
     # Build command with virtual environment
-    local CMD="./webui.sh -f --listen --port $PORT --api --skip-torch-cuda-test"
+    # 2025-04-14 18:22: Added --skip-sd-models-download flag to prevent model repository downloads
+    # 2025-04-14T21:22:00-04:00: Removed --listen flag as it's not needed
+    # [2025-04-17T13:18:03-04:00] Changed to use absolute path for better reliability
+    local CMD="/workspace/a1111_gpu${GPU_NUM}/webui.sh -f --port $PORT --api"
     
     # Add mode-specific args
     log "$GPU_NUM" "A1111: Building command... GPU_NUM=$GPU_NUM MOCK_GPU=${MOCK_GPU:-0}"
@@ -262,8 +262,8 @@ status() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/a1111_gpu${GPU_NUM}"
     local PID_FILE="${WORK_DIR}/a1111.pid"
-    # 2025-04-12 17:42: Changed port from 3000 to 3100 to avoid conflict with nginx
-    local PORT=$((3100 + GPU_NUM))
+    # 2025-04-14T21:22:00-04:00: Changed port from 3100 to 3001 to match expected configuration
+    local PORT=$((3001 + GPU_NUM))
     
     if [ ! -f "$PID_FILE" ]; then
         log "$GPU_NUM" "Service is not running (no PID file)"

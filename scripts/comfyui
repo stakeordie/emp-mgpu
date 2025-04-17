@@ -17,6 +17,18 @@ if [ "${MOCK_GPU:-0}" = "1" ]; then
     export COMFY_ARGS="--cpu"
 fi
 
+# [2025-04-15T17:23:28-04:00] Function to load environment variables from env.sh
+load_environment_variables() {
+    local GPU_NUM=$1
+    
+    if [ -f "/etc/profile.d/env.sh" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ComfyUI GPU $GPU_NUM] Loading environment variables from /etc/profile.d/env.sh"
+        source "/etc/profile.d/env.sh"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ComfyUI GPU $GPU_NUM] WARNING: Environment file /etc/profile.d/env.sh not found"
+    fi
+}
+
 # Setup logging
 setup_logs() {
     local GPU_NUM=$1
@@ -59,7 +71,19 @@ log() {
 start() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/comfyui_gpu${GPU_NUM}"
-    local PORT=$((8188 + GPU_NUM))
+    
+    # [2025-04-15T17:23:28-04:00] Load environment variables before using them
+    load_environment_variables "$GPU_NUM"
+    # [2025-04-15T17:17:42-04:00] Use WORKER_BASE_COMFYUI_PORT + GPU_NUM for port calculation
+    local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+    local PORT=$((BASE_PORT + GPU_NUM))
+    
+    # Log which base port is being used
+    if [ -n "${WORKER_BASE_COMFYUI_PORT}" ]; then
+        log "$GPU_NUM" "Using WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT} for port calculation: $PORT"
+    else
+        log "$GPU_NUM" "WORKER_BASE_COMFYUI_PORT not set, using default base port 8188: $PORT"
+    fi
     
     # Setup logs first
     setup_logs "$GPU_NUM"
@@ -142,7 +166,12 @@ start() {
 stop() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/comfyui_gpu${GPU_NUM}"
-    local PORT=$((8188 + GPU_NUM))
+    
+    # [2025-04-15T17:23:28-04:00] Load environment variables before using them
+    load_environment_variables "$GPU_NUM"
+    # [2025-04-15T17:17:42-04:00] Use WORKER_BASE_COMFYUI_PORT + GPU_NUM for port calculation
+    local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+    local PORT=$((BASE_PORT + GPU_NUM))
     
     log "$GPU_NUM" "Stopping service..."
     
@@ -195,8 +224,13 @@ stop() {
 
 restart() {
     local GPU_NUM=$1
-    local PORT=$((8188 + GPU_NUM))
     local WORK_DIR="${ROOT}/comfyui_gpu${GPU_NUM}"
+    
+    # [2025-04-15T17:23:28-04:00] Load environment variables before using them
+    load_environment_variables "$GPU_NUM"
+    # [2025-04-15T17:23:28-04:00] Use WORKER_BASE_COMFYUI_PORT + GPU_NUM for port calculation
+    local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+    local PORT=$((BASE_PORT + GPU_NUM))
     
     # Load saved mock state if it exists
     if [ -f "${WORK_DIR}/comfyui.mock" ]; then
@@ -230,7 +264,12 @@ restart() {
 status() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/comfyui_gpu${GPU_NUM}"
-    local PORT=$((8188 + GPU_NUM))
+    
+    # [2025-04-15T17:23:28-04:00] Load environment variables before using them
+    load_environment_variables "$GPU_NUM"
+    # [2025-04-15T17:23:28-04:00] Use WORKER_BASE_COMFYUI_PORT + GPU_NUM for port calculation
+    local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+    local PORT=$((BASE_PORT + GPU_NUM))
     local RETRIES=3  # Number of retries for port check
     
     local STATUS="not running"

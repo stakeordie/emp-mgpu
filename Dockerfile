@@ -4,7 +4,7 @@ FROM pytorch/pytorch:latest AS start
 # Updated: 2025-04-14T10:30:00-04:00 - Added Azure CLI installation
 RUN apt update && apt-get install -y \
     git git-lfs rsync nginx wget curl jq tar nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6\
-    cron sudo ssh zstd build-essential cmake ninja-build \
+    cron sudo ssh zstd build-essential libgoogle-perftools-dev cmake ninja-build \
     gcc g++ openssh-client libx11-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxi-dev libgl1-mesa-dev libglfw3-dev software-properties-common \
     apt-transport-https ca-certificates gnupg lsb-release \
@@ -161,5 +161,54 @@ RUN chmod +x /usr/local/bin/cleanup_outputs.sh && \
     chmod 644 /var/run/cron/crond.pid && \
     sed -i 's/touch $PIDFILE/# touch $PIDFILE/g' /etc/init.d/cron
     
+# Added: 2025-04-14T18:41:00-04:00 - Automatic1111 setup
+# Setup Automatic1111 template directory
+
+
+# Copy Automatic1111 scripts
+# Added: 2025-04-14T18:55:00-04:00 - Moved scripts to /scripts/ directory for consistency
+RUN mkdir -p /scripts/a1111_scripts
+COPY scripts/a1111_scripts/ /scripts/a1111_scripts/
+RUN chmod +x /scripts/a1111_scripts/*
+
+RUN mkdir -p /tmp/a1111_template && \
+    cd /tmp && \
+    chmod +x /scripts/a1111_scripts/a1111_clone.sh && \
+    cd /tmp/a1111_template && \
+    git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git . && \
+    git reset --hard cf2772fab0af5573da775e7437e6acdca424f26e
+
+# Clone required repositories for Automatic1111
+# Added: 2025-04-14T18:55:00-04:00 - Updated path for clone script
+RUN cd /workspace && \
+    mkdir -p /repositories && \
+    /scripts/a1111_scripts/a1111_clone.sh stable-diffusion-stability-ai https://github.com/Stability-AI/stablediffusion.git cf1d67a6fd5ea1aa600c4df58e5b47da45f6bdbf && \
+    /scripts/a1111_scripts/a1111_clone.sh CodeFormer https://github.com/sczhou/CodeFormer.git c5b4593074ba6214284d6acd5f1719b6c5d739af && \
+    /scripts/a1111_scripts/a1111_clone.sh BLIP https://github.com/salesforce/BLIP.git 48211a1594f1321b00f14c9f7a5b4813144b2fb9 && \
+    /scripts/a1111_scripts/a1111_clone.sh k-diffusion https://github.com/crowsonkb/k-diffusion.git ab527a9a6d347f364e3d185ba6d714e22d80cb3c && \
+    /scripts/a1111_scripts/a1111_clone.sh clip-interrogator https://github.com/pharmapsychotic/clip-interrogator 2cf03aaf6e704197fd0dae7c7f96aa59cf1b11c9 && \
+    /scripts/a1111_scripts/a1111_clone.sh generative-models https://github.com/Stability-AI/generative-models 45c443b316737a4ab6e40413d7794a7f5657c19f
+
+# Install tcmalloc to fix memory leaks
+ENV LD_PRELOAD=libtcmalloc.so
+
+# Create directories for models and outputs
+# Added: 2025-04-14T18:42:00-04:00 - Using template directory approach for multi-GPU support
+RUN mkdir -p /tmp/a1111_template/models/Stable-diffusion \
+    /tmp/a1111_template/models/VAE-approx \
+    /tmp/a1111_template/models/karlo \
+    /data/models/Stable-diffusion \
+    /data/models/VAE-approx \
+    /data/models/karlo \
+    /data/embeddings \
+    /data/config/auto \
+    /data/config/auto/scripts \
+    /output/txt2img-images \
+    /output/img2img-images \
+    /output/extras-images \
+    /output/txt2img-grids \
+    /output/img2img-grids \
+    /output/saved
+
 # Start services and application
 CMD ["/scripts/start.sh"]

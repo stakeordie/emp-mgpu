@@ -66,7 +66,7 @@ services:
       # Updated: 2025-04-14T10:15:00-04:00 - Testing Azure sync
       - STORAGE_TEST_MODE=true
       - SKIP_STORAGE_SYNC=false
-      - CLOUD_PROVIDER=azure
+      - CLOUD_PROVIDER=aws
       - AZURE_STORAGE_CONTAINER=emprops-share-test
     build:
       args:

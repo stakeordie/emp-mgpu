@@ -11,17 +11,33 @@ chmod 755 "$LOG_DIR"
 touch "$START_LOG"
 chmod 644 "$START_LOG"
 
-# Source environment variables
-if [ -f /etc/environment ]; then
-    while IFS='=' read -r key value; do
-        if [ -n "$key" ]; then
-            # Remove any leading/trailing whitespace and quotes
-            key=$(echo "$key" | tr -d '"' | xargs)
-            value=$(echo "$value" | tr -d '"' | xargs)
-            export "$key=$value"
+# [2025-04-15T16:25:23-04:00] Source environment variables from env.sh
+load_environment_variables() {
+    local log_prefix="$1"
+    
+    if [ -f "/etc/profile.d/env.sh" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$log_prefix] Loading environment variables from /etc/profile.d/env.sh"
+        source "/etc/profile.d/env.sh"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$log_prefix] WARNING: Environment file /etc/profile.d/env.sh not found"
+        
+        # Fallback to /etc/environment if env.sh doesn't exist
+        if [ -f /etc/environment ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$log_prefix] Falling back to /etc/environment"
+            while IFS='=' read -r key value; do
+                if [ -n "$key" ]; then
+                    # Remove any leading/trailing whitespace and quotes
+                    key=$(echo "$key" | tr -d '"' | xargs)
+                    value=$(echo "$value" | tr -d '"' | xargs)
+                    export "$key=$value"
+                fi
+            done < /etc/environment
         fi
-    done < /etc/environment
-fi
+    fi
+}
+
+# Load environment variables early
+load_environment_variables "WGPU"
 
 # Set NUM_GPUS with fallback to avoid errors
 NUM_GPUS="${NUM_GPUS:-0}"
@@ -307,6 +323,32 @@ WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}
 WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}
 WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}
 EOF
+
+    # [2025-04-15T16:41:48-04:00] Dynamic port assignment for all WORKER_BASE_*_PORT variables
+    # For every WORKER_BASE_*_PORT in env, generate WORKER_X_PORT = BASE + GPU_NUM
+    # This ensures deterministic, future-proof port assignment for all worker services
+    log "Adding dynamic port assignments to worker .env file"
+    
+    for base_var in $(env | grep -E '^WORKER_BASE_.*_PORT=' | cut -d= -f1); do
+        # Extract the service name from WORKER_BASE_X_PORT
+        service_name=$(echo "$base_var" | sed -E 's/^WORKER_BASE_(.*)_PORT$/\1/')
+        # Get the base port value
+        base_port=${!base_var}
+        
+        if [ -z "$base_port" ]; then
+            log "WARNING: $base_var is defined but empty, skipping port assignment"
+            continue
+        fi
+        
+        # Compose new variable name: WORKER_X_PORT
+        worker_port_var="WORKER_${service_name}_PORT"
+        # Calculate port: base_port + gpu_id
+        worker_port=$((base_port + gpu_id))
+        
+        # Add to .env file
+        echo "$worker_port_var=$worker_port" >> "$WORK_DIR/.env"
+        log "  Added $worker_port_var=$worker_port (from $base_var=$base_port + gpu_id=$gpu_id)"
+    done
     
     log "Setup complete for Redis worker on GPU $gpu_id"
     return 0

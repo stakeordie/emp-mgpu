@@ -539,7 +539,7 @@ setup_comfyui() {
 
 # Function to setup Automatic1111 for a specific GPU
 setup_a1111() {
-    # 2025-04-12 20:27: Enhanced setup function for Automatic1111 with better logging, error handling, and symbolic link creation
+    # 2025-04-14 20:40:00-04:00: Updated to use template approach instead of cloning
     local gpu_id=$1
     local target_dir=$2
     
@@ -554,44 +554,26 @@ setup_a1111() {
         }
     fi
     
-    # Use A1111_REPO_URL environment variable with fallback
-    local repo_url="${A1111_REPO_URL:-https://github.com/AUTOMATIC1111/stable-diffusion-webui.git}"
-    
-    log "Cloning Automatic1111 from ${repo_url} for GPU ${gpu_id}..."
-    log "DEBUG: Running git clone command: git clone $repo_url $target_dir"
-    
-    # Check if git is installed
-    if ! command -v git >/dev/null 2>&1; then
-        log "ERROR: git command not found. Please install git."
-        return 1
-    fi
-    
-    # Check if directory is empty or already contains the repository
+    # Check if directory is empty
     if [ "$(ls -A "$target_dir" 2>/dev/null)" ]; then
-        log "WARNING: Target directory $target_dir is not empty"
+        log "Target directory $target_dir is not empty, using existing installation"
+    else
+        # Copy from template directory
+        log "Copying Automatic1111 from template for GPU ${gpu_id}..."
         
-        # Check if it's already a git repository
-        if [ -d "$target_dir/.git" ]; then
-            log "Git repository already exists in $target_dir, attempting to update"
-            
-            # Try to update the repository
-            (cd "$target_dir" && git pull) || {
-                log "ERROR: Failed to update existing repository"
+        # [2025-04-15T10:04:50-04:00] Use /tmp/a1111_template as the new template source
+        if [ -d "/tmp/a1111_template" ]; then
+            log "Copying from template directory /tmp/a1111_template"
+            # [2025-04-15T21:26:34-04:00] Use rsync instead of cp to include hidden files like .git
+            rsync -a /tmp/a1111_template/ "$target_dir/" || {
+                log "ERROR: Failed to copy from template directory"
                 return 1
             }
+            log "Successfully copied Automatic1111 template to $target_dir"
         else
-            log "ERROR: Target directory $target_dir is not empty and not a git repository"
-            log "DEBUG: Directory contents: $(ls -la "$target_dir")"
+            log "ERROR: Template directory /tmp/a1111_template not found"
             return 1
         fi
-    else
-        # Clone the repository
-        if ! git clone "$repo_url" "$target_dir" 2>&1 | tee -a "${ROOT}/logs/git_clone.log"; then
-            log "ERROR: Failed to clone Automatic1111 from $repo_url"
-            log "DEBUG: Check ${ROOT}/logs/git_clone.log for details"
-            return 1
-        fi
-        log "Successfully cloned Automatic1111 repository"
     fi
     
     # Create logs directory
@@ -612,7 +594,7 @@ setup_a1111() {
         return 1
     fi
     
-    # 2025-04-13 11:34: Make webui.sh executable
+    # Make webui.sh executable
     log "Making webui.sh executable..."
     if [ -f "${target_dir}/webui.sh" ]; then
         chmod +x "${target_dir}/webui.sh" || {
@@ -622,33 +604,208 @@ setup_a1111() {
         log "WARNING: webui.sh not found in $target_dir"
     fi
     
-    # 2025-04-13 11:34: Create webui-user.sh to disable venv
-    log "Creating webui-user.sh to disable virtual environment..."
-    cat > "${target_dir}/webui-user.sh" << 'EOF'
-#!/bin/bash
-# 2025-04-13 11:34: Custom configuration for Automatic1111
-
-# Disable virtual environment
-venv_dir="-"
-
-# Skip torch/cuda tests
-export SKIP_TORCH_CUDA_TEST=1
-
-# Don't reinstall existing packages
-export PIP_IGNORE_INSTALLED=1
-
-# Skip model download
-export COMMANDLINE_ARGS="--skip-torch-cuda-test --skip-python-version-check"
-EOF
+    # Setup configuration symlinks
+    # Added: 2025-04-14T20:45:00-04:00 - Setting up configuration symlinks
+    log "Setting up configuration symlinks"
     
-    # Make webui-user.sh executable
-    chmod +x "${target_dir}/webui-user.sh" || {
-        log "WARNING: Failed to make webui-user.sh executable"
-    }
+    # Create necessary directories
+    mkdir -p /data/.cache /data/embeddings /data/config/auto /data/config/auto/extensions /data/config/auto/config_states
     
-    # Create symbolic links based on YAML configuration
-    log "Creating symbolic links from shared directories..."
-    create_symbolic_links_from_yaml "$target_dir"
+    # Define configuration symlinks
+    declare -A CONFIG_SYMLINKS=(
+        ["${target_dir}/config.json"]="/data/config/auto/config.json"
+        ["${target_dir}/ui-config.json"]="/data/config/auto/ui-config.json"
+        ["${target_dir}/styles.csv"]="/data/config/auto/styles.csv"
+        ["${target_dir}/extensions"]="/data/config/auto/extensions"
+        ["${target_dir}/config_states"]="/data/config/auto/config_states"
+        ["${target_dir}/embeddings"]="/data/embeddings"
+    )
+    
+    # Create configuration symlinks
+    for link_target in "${!CONFIG_SYMLINKS[@]}"; do
+        link_source="${CONFIG_SYMLINKS[$link_target]}"
+        
+        # Remove target if it exists
+        if [ -e "$link_target" ]; then
+            rm -rf "$link_target"
+        fi
+        
+        # Create parent directory if needed
+        mkdir -p "$(dirname "$link_target")"
+        
+        # Create source file/directory if it doesn't exist
+        if [ ! -e "$link_source" ]; then
+            if [[ "$link_source" == *".json" ]] || [[ "$link_source" == *".csv" ]]; then
+                # For files, create empty file
+                touch "$link_source"
+            else
+                # For directories, create directory
+                mkdir -p "$link_source"
+            fi
+        fi
+        
+        # Create symlink
+        ln -sf "$link_source" "$link_target"
+        log "Created symlink: $link_target -> $link_source"
+    done
+    
+    # [2025-04-17T13:33:51-04:00] Initialize configuration files with valid JSON
+    log "Initializing configuration files with valid JSON"
+    if [ -f "/scripts/a1111_scripts/a1111_config.py" ]; then
+        python3 /scripts/a1111_scripts/a1111_config.py "/data/config/auto/config.json"
+        python3 /scripts/a1111_scripts/a1111_config.py "/data/config/auto/ui-config.json"
+        log "Configuration files initialized with valid JSON structure"
+    else
+        log "WARNING: a1111_config.py not found, configuration files may be empty"
+    fi
+    
+    # [2025-04-15T10:04:50-04:00] Setting up shared a1111_models directory and symlink in worker
+    SHARED_MODELS_DIR="/workspace/shared/a1111_models"
+    mkdir -p "$SHARED_MODELS_DIR"
+    # [2025-04-16T20:33:38-04:00] Ensure Stable-diffusion subdirectory exists
+    mkdir -p "${SHARED_MODELS_DIR}/Stable-diffusion"
+    log "Created directory: ${SHARED_MODELS_DIR}/Stable-diffusion"
+    
+    # Remove any models directory in the worker (if present)
+    if [ -e "${target_dir}/models" ]; then
+        rm -rf "${target_dir}/models"
+    fi
+    ln -sf "$SHARED_MODELS_DIR" "${target_dir}/models"
+    log "Created symlink: ${target_dir}/models -> $SHARED_MODELS_DIR"
+    
+    # [2025-04-16T20:24:53-04:00] Check for models only in shared models directory
+    # Removed unnecessary ComfyUI directory path as it never contains models
+    COMFY_MODEL_DIRS=(
+        "/workspace/shared/models/checkpoints"
+    )
+    
+    MODELS_FOUND=false
+    
+    # Define the models we want to look for with their download URLs
+    # Added: 2025-04-14T21:26:00-04:00 - Added model download URLs for individual downloads
+    declare -A MODEL_URLS=(
+        ["juggernautXL_v8Rundiffusion.safetensors"]="https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16"
+        ["v1-5-pruned.safetensors"]="https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors"
+        ["v2-1_768-ema-pruned.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors"
+        ["sd_xl_base_1.0_0.9vae.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors"
+        ["sd_xl_refiner_1.0_0.9vae.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0_0.9vae.safetensors"
+        ["v1-5-pruned.ckpt"]="https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.ckpt"
+        ["v2-1_768-ema-pruned.ckpt"]="https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.ckpt"
+        ["sd_xl_base_1.0.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
+        ["sd_xl_refiner_1.0.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors"
+    )
+    
+    # Added: 2025-04-14T21:29:00-04:00 - Define model name aliases (different capitalizations)
+    declare -A MODEL_ALIASES=(
+        ["JuggernautXL_v8Rundiffusion.safetensors"]="juggernautXL_v8Rundiffusion.safetensors"
+    )
+    
+    # Set up a counter for downloaded models
+    MODELS_DOWNLOADED=0
+    
+    # Process each model
+    # Added: 2025-04-14T21:29:00-04:00 - Enhanced to handle model aliases and different capitalizations
+    for model_name in "${!MODEL_URLS[@]}"; do
+        MODEL_FOUND=false
+        
+        # Check if model exists in any of the ComfyUI model directories
+        for comfy_dir in "${COMFY_MODEL_DIRS[@]}"; do
+            if [ -f "${comfy_dir}/${model_name}" ]; then
+                log "Found model ${model_name} in ${comfy_dir}, creating symlink"
+                # [2025-04-16T20:34:27-04:00] Updated to use SHARED_MODELS_DIR instead of target_dir/models
+                if ! ln -sf "${comfy_dir}/${model_name}" "${SHARED_MODELS_DIR}/Stable-diffusion/${model_name}"; then
+                    log "ERROR: Failed to create symlink for ${model_name}"
+                else
+                    log "Successfully created symlink: ${SHARED_MODELS_DIR}/Stable-diffusion/${model_name} -> ${comfy_dir}/${model_name}"
+                    MODEL_FOUND=true
+                fi
+                MODELS_FOUND=true
+                break
+            fi
+        done
+        
+        # If model not found in ComfyUI directories, download it
+        if [ "$MODEL_FOUND" = "false" ]; then
+            # [2025-04-15T09:44:38-04:00] Block downloads if STORAGE_TEST_MODE=true
+            # if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
+            #     log "[TEST MODE] STORAGE_TEST_MODE=true: Skipping download of missing model ${model_name}. No download will be attempted."
+            #     continue
+            # fi
+            log "Model ${model_name} not found in ComfyUI directories, attempting to download"
+            
+            # Get the download URL
+            download_url="${MODEL_URLS[$model_name]}"
+            target_file="${target_dir}/models/Stable-diffusion/${model_name}"
+            
+            # Download the model
+            log "Downloading ${model_name} from ${download_url}"
+            if curl -L -o "$target_file" "$download_url" --progress-bar; then
+                log "Successfully downloaded ${model_name}"
+                MODELS_FOUND=true
+                MODELS_DOWNLOADED=$((MODELS_DOWNLOADED + 1))
+            else
+                log "WARNING: Failed to download ${model_name}"
+            fi
+        fi
+    done
+    
+    # Process model aliases (different capitalizations)
+    for alias_name in "${!MODEL_ALIASES[@]}"; do
+        original_name="${MODEL_ALIASES[$alias_name]}"
+        target_file="${target_dir}/models/Stable-diffusion/${original_name}"
+        alias_file="${target_dir}/models/Stable-diffusion/${alias_name}"
+        
+        # If the original model exists, create a symlink with the alias name
+        if [ -f "$target_file" ]; then
+            log "Creating alias symlink: ${alias_name} -> ${original_name}"
+            ln -sf "$target_file" "$alias_file"
+        else
+            # Check if the alias exists in ComfyUI directories
+            ALIAS_FOUND=false
+            
+            for comfy_dir in "${COMFY_MODEL_DIRS[@]}"; do
+                if [ -f "${comfy_dir}/${alias_name}" ]; then
+                    log "Found alias model ${alias_name} in ${comfy_dir}, creating symlinks"
+                    ln -sf "${comfy_dir}/${alias_name}" "$alias_file"
+                    ln -sf "${comfy_dir}/${alias_name}" "$target_file"
+                    ALIAS_FOUND=true
+                    MODELS_FOUND=true
+                    break
+                fi
+            done
+            
+            if [ "$ALIAS_FOUND" = "false" ]; then
+                log "Alias model ${alias_name} not found, skipping"
+            fi
+        fi
+    done
+    
+    log "Downloaded $MODELS_DOWNLOADED models that weren't found locally"
+    
+    # If no models were found, clone the repo
+    # Added: 2025-04-14T20:45:00-04:00 - Added model repository cloning as fallback
+    # if [ "${STORAGE_TEST_MODE:-false}" = "false" ]; then
+        log "No models found in ComfyUI directories, cloning sd_models repo"
+        
+        # Install git-lfs if not already installed
+        if ! command -v git-lfs &> /dev/null; then
+            log "Installing git-lfs"
+            apt-get update && apt-get install -y git-lfs
+            git lfs install
+        fi
+        
+        # Clone the models repo
+        log "Cloning sd_models repo"
+        git clone https://github.com/stakeordie/sd_models.git /tmp/emprops_models_repo
+        rm -rf /tmp/emprops_models_repo/.git
+        
+        # Copy models to the shared a1111_models directory
+        log "Copying models to /workspace/shared/a1111_models"
+        rsync -avz --progress /tmp/emprops_models_repo/ "/workspace/shared/a1111_models/"
+        
+        # Clean up
+        rm -rf /tmp/emprops_models_repo
+    # fi
     
     log "Automatic1111 setup complete for GPU ${gpu_id}"
     return 0

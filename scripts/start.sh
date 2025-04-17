@@ -186,6 +186,8 @@ setup_env_vars() {
         echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
         echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
+        echo "WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT}"
+        echo "WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT}"
         # Added: 2025-04-13T21:45:00-04:00 - Azure Blob Storage environment variables
         # Updated: 2025-04-14T09:40:00-04:00 - Made environment variables provider-agnostic
         echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT}"
@@ -207,6 +209,8 @@ setup_env_vars() {
         log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
         log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
         log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
+        log "WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT}"
+        log "WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT}"
 
     # Also add to profile for interactive sessions
     {
@@ -238,7 +242,10 @@ setup_env_vars() {
         echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
         echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
-    } > /etc/profile.d/comfyui-env.sh
+        echo "WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT}"
+        echo "WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT}"
+    # [2025-04-15T16:24:15-04:00] Changed to more generic env.sh name for clarity and consistency
+    } > /etc/profile.d/env.sh
     
     # Set for current session
     export PATH="${clean_path}"
@@ -627,11 +634,10 @@ azure_sync() {
     log "Azure CLI method failed, trying direct downloads..."
     
     # Define known model paths to try
+    # 2025-04-14T22:45:00-04:00: Removed SDXL models from direct download list
+    # Only download models that should be in shared storage
     local model_paths=(
         "models/checkpoints/v1-5-pruned-emaonly.ckpt"
-        "models/checkpoints/sd_xl_base_1.0.safetensors"
-        "models/checkpoints/sd_xl_refiner_1.0.safetensors"
-        "models/loras/sd_xl_offset_example-lora_1.0.safetensors"
     )
     
     # Create necessary directories
@@ -811,7 +817,13 @@ manage_custom_nodes() {
             if [ "$env_vars" != "null" ] && [ ! -z "$env_vars" ]; then
                 log "  Setting up .env file"
                 : > "$name/.env"
+
+                # [2025-04-15T16:41:48-04:00] NOTE: Dynamic port assignment is now handled by the wgpu script
+                # The following code is commented out as it's no longer used for worker .env generation
                 
+                # [2025-04-15T08:58:00-04:00] Dynamic WORKER_X_PORT assignment from WORKER_BASE_*_PORT
+                # For every WORKER_BASE_*_PORT in env, generate WORKER_X_PORT = BASE + GPU_NUM
+                # This block is future-proof for any new *_PORT variable added
                 while IFS="=" read -r key value; do
                     if [ ! -z "$key" ]; then
                         expanded_value=$(eval echo "$value")
@@ -819,6 +831,20 @@ manage_custom_nodes() {
                         log "    Added env var: $key"
                     fi
                 done < <(echo "$env_vars" | jq -r 'to_entries | .[] | "\(.key)=\(.value)"')
+
+                # --- BEGIN: COMMENTED OUT: Dynamic port assignment [2025-04-15T08:58:00-04:00] ---
+                # for base_var in $(env | grep -E '^WORKER_BASE_.*_PORT=' | cut -d= -f1); do
+                #     # Extract the X from WORKER_BASE_X_PORT
+                #     service_name=$(echo "$base_var" | sed -E 's/^WORKER_BASE_(.*)_PORT$/\1/')
+                #     base_port=${!base_var}
+                #     # Compose new var name: WORKER_X_PORT
+                #     worker_port_var="WORKER_${service_name}_PORT"
+                #     # Compute port: base + GPU_NUM
+                #     worker_port=$((base_port + GPU_NUM))
+                #     echo "$worker_port_var=$worker_port" >> "$name/.env"
+                #     log "    [PORT ASSIGN] $worker_port_var=$worker_port (from $base_var=$base_port + GPU_NUM=$GPU_NUM)"
+                # done
+                # --- END: COMMENTED OUT: Dynamic port assignment [2025-04-15T08:58:00-04:00] ---
             fi
             
             # Handle requirements installation
@@ -1255,7 +1281,16 @@ verify_services() {
         fi
         
         # Check proxy port
-        local proxy_port=$((8188 + instance))
+        # [2025-04-15T17:38:39-04:00] Use WORKER_BASE_COMFYUI_PORT + instance for port calculation
+        local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+        local proxy_port=$((BASE_PORT + instance))
+        
+        # Log which base port is being used
+        if [ -n "${WORKER_BASE_COMFYUI_PORT}" ]; then
+            log "Using WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT} for port calculation: $proxy_port"
+        else
+            log "WORKER_BASE_COMFYUI_PORT not set, using default base port 8188: $proxy_port"
+        fi
         if ! netstat -tuln | grep -q ":$proxy_port "; then
             log "ERROR: ComfyUI port $proxy_port is not listening"
             log "Current listening ports:"
@@ -1305,8 +1340,16 @@ verify_services() {
         fi
         
         # Check proxy port
-        # 2025-04-12 17:43: Changed port from 3000 to 3100 to avoid conflict with nginx
-        local proxy_port=$((3100 + instance))
+        # [2025-04-15T17:38:39-04:00] Use WORKER_BASE_A1111_PORT + instance for port calculation
+        local BASE_PORT="${WORKER_BASE_A1111_PORT:-3001}"
+        local proxy_port=$((BASE_PORT + instance))
+        
+        # Log which base port is being used
+        if [ -n "${WORKER_BASE_A1111_PORT}" ]; then
+            log "Using WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT} for port calculation: $proxy_port"
+        else
+            log "WORKER_BASE_A1111_PORT not set, using default base port 3001: $proxy_port"
+        fi
         if ! netstat -tuln | grep -q ":$proxy_port "; then
             log "ERROR: Automatic1111 port $proxy_port is not listening"
             log "Current listening ports:"
@@ -1353,8 +1396,9 @@ verify_services() {
         
         # Automatic1111 status
         # 2025-04-12 17:43: Changed port from 3000 to 3100 to avoid conflict with nginx
+        # 2025-04-14 23:17:00-04:00: Updated port from 3100 to 3001 to match a1111 script configuration
         local a1111_service_status=$(mgpu a1111 status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
-        local a1111_port=$((3100 + instance))
+        local a1111_port=$((3001 + instance))
         local a1111_port_status=$(netstat -tuln | grep -q ":$a1111_port " && echo "LISTENING" || echo "NOT LISTENING")
         local a1111_api_status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$a1111_port/" | grep -q "200" && echo "RESPONDING" || echo "NOT RESPONDING")
         
@@ -1564,8 +1608,16 @@ setup_redis_workers() {
 
         # --- Setup Worker Environment ---
         # Determine the correct ComfyUI port for this worker
-        # Restore original port calculation
-        local comfyui_port=$((8188 + i))
+        # [2025-04-15T17:38:39-04:00] Use WORKER_BASE_COMFYUI_PORT + i for port calculation
+        local BASE_PORT="${WORKER_BASE_COMFYUI_PORT:-8188}"
+        local comfyui_port=$((BASE_PORT + i))
+        
+        # Log which base port is being used
+        if [ -n "${WORKER_BASE_COMFYUI_PORT}" ]; then
+            log "Using WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT} for port calculation: $comfyui_port"
+        else
+            log "WORKER_BASE_COMFYUI_PORT not set, using default base port 8188: $comfyui_port"
+        fi
 
         # Determine Worker ID
         host_identifier=$(echo "$HOSTNAME" | cut -d'-' -f1)
@@ -1583,6 +1635,8 @@ setup_redis_workers() {
         log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
         log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
         log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
+        log "WORKER_BASE_COMFYUI_PORT: ${WORKER_BASE_COMFYUI_PORT}"
+        log "WORKER_BASE_A1111_PORT: ${WORKER_BASE_A1111_PORT}"
 
         
 
