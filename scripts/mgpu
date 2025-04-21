@@ -727,10 +727,10 @@ setup_a1111() {
         # If model not found in ComfyUI directories, download it
         if [ "$MODEL_FOUND" = "false" ]; then
             # [2025-04-15T09:44:38-04:00] Block downloads if STORAGE_TEST_MODE=true
-            # if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
-            #     log "[TEST MODE] STORAGE_TEST_MODE=true: Skipping download of missing model ${model_name}. No download will be attempted."
-            #     continue
-            # fi
+            if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
+                log "[TEST MODE] STORAGE_TEST_MODE=true: Skipping download of missing model ${model_name}. No download will be attempted."
+                continue
+            fi
             log "Model ${model_name} not found in ComfyUI directories, attempting to download"
             
             # Get the download URL
@@ -784,7 +784,7 @@ setup_a1111() {
     
     # If no models were found, clone the repo
     # Added: 2025-04-14T20:45:00-04:00 - Added model repository cloning as fallback
-    # if [ "${STORAGE_TEST_MODE:-false}" = "false" ]; then
+    if [ "${STORAGE_TEST_MODE:-false}" = "false" ]; then
         log "No models found in ComfyUI directories, cloning sd_models repo"
         
         # Install git-lfs if not already installed
@@ -805,7 +805,7 @@ setup_a1111() {
         
         # Clean up
         rm -rf /tmp/emprops_models_repo
-    # fi
+    fi
     
     log "Automatic1111 setup complete for GPU ${gpu_id}"
     return 0

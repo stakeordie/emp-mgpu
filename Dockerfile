@@ -124,6 +124,8 @@ RUN chmod +x /usr/local/lib/mcomfy/update_nodes.sh
 COPY scripts/start.sh /scripts/start.sh
 RUN chmod +x /scripts/start.sh
 
+COPY config/stake-or-die-e419d53af34a.json /credentials/stake-or-die-e419d53af34a.json
+
 # Add build argument for fresh clone
 ARG FORCE_FRESH_CLONE=false
 # Cache buster for fresh clone

@@ -80,8 +80,12 @@ main() {
     log_phase "3" "Setting up custom nodes"
     setup_preinstalled_nodes
 
+    # Phase 4: Setup shared directories
+    log_phase "4" "Setting up custom nodes"
+    manage_custom_nodes
+
     # Updated: 2025-04-14T09:50:00-04:00 - Made storage sync provider-agnostic
-    log_phase "4&5" "model sync"
+    log_phase "5" "model sync"
     if ! sync_models; then
         log "ERROR: Model sync failed"
         return 1
@@ -735,7 +739,7 @@ manage_custom_nodes() {
 
     # Determine which config file to use
     local config_file="/workspace/shared/config_nodes.json"
-    if [ "${AWS_TEST_MODE:-false}" = "true" ]; then
+    if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
         log "Using test config: config_nodes_test.json"
         config_file="/workspace/shared/config_nodes_test.json"
     fi
