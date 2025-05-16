@@ -148,8 +148,13 @@ RUN chmod +x /usr/local/lib/mcomfy/update_models.sh
 COPY scripts/start.sh /scripts/start.sh
 RUN chmod +x /scripts/start.sh
 
-COPY config/stake-or-die.json /credentials/stake-or-die.json
-COPY config/emprops.json /credentials/emprops.json
+# [2025-05-16T18:10:00-04:00] Updated credential handling to be more secure
+# Create empty credential files that will be populated at runtime
+RUN mkdir -p /credentials && \
+    echo '{"type": "service_account", "universe_domain": "googleapis.com"}' > /credentials/stake-or-die.json && \
+    echo '{"type": "service_account", "universe_domain": "googleapis.com"}' > /credentials/emprops.json
+
+# Credentials will be mounted or populated from environment variables at runtime
 
 # Add build argument for fresh clone
 ARG FORCE_FRESH_CLONE=false
