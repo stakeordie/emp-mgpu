@@ -5,6 +5,7 @@ All notable changes to the EMP MGPU project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- [2025-05-07T12:39:06-04:00] Modified start.sh to install requirements.txt for custom nodes in manage_custom_nodes. This ensures Python dependencies like azure-storage-blob for EmProps_Cloud_Storage_Saver are installed, fixing 'Unsupported provider: azure' errors.
 - [2025-04-17 13:33] Fixed Automatic1111 JSON decoding error by initializing configuration files with valid JSON structure. Updated a1111_config.py to handle empty files gracefully and added configuration initialization to the setup_a1111 function. This prevents webui.sh from failing when trying to load empty configuration files.
 - [2025-04-17 13:18] Changed A1111 launch command to use absolute path (/workspace/a1111_gpu${GPU_NUM}/webui.sh) instead of relative path (./webui.sh). This improves reliability by eliminating potential path-related issues and makes the launch process more robust across different environments.
 - [2025-04-16 20:34] Fixed model symlink target to use shared models directory directly. Added error checking and detailed logging for symlink creation. This ensures models are properly symlinked to the shared directory and are accessible to all worker instances.

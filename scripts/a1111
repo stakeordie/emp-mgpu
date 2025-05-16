@@ -133,11 +133,15 @@ start() {
     # 2025-04-14T20:47:00-04:00: Removed duplicate setup logic that's now in mgpu's setup_a1111 function
     # All one-time setup is now done during the initial setup phase, not during service start
     
-    # Build command with virtual environment
+    # Build command with conda environment
     # 2025-04-14 18:22: Added --skip-sd-models-download flag to prevent model repository downloads
     # 2025-04-14T21:22:00-04:00: Removed --listen flag as it's not needed
     # [2025-04-17T13:18:03-04:00] Changed to use absolute path for better reliability
-    local CMD="/workspace/a1111_gpu${GPU_NUM}/webui.sh -f --port $PORT --api"
+    # [2025-05-16T16:21:00-04:00] Updated to use conda environment for A1111
+    # [2025-05-16T16:42:00-04:00] Removed xformers flag since we're not installing it
+    # [2025-05-16T16:43:00-04:00] Added options from reference build.sh: --opt-sdp-no-mem-attention --medvram --no-half-vae
+    # [2025-05-16T17:30:00-04:00] Added additional flags to help with PyTorch compatibility issues
+    local CMD="source /opt/conda/bin/activate a1111 && cd /workspace/a1111_gpu${GPU_NUM} && python launch.py -f --port $PORT --api --enable-insecure-extension-access --skip-torch-cuda-test --opt-sdp-no-mem-attention --medvram --no-half-vae --precision full --no-half --skip-version-check"
     
     # Add mode-specific args
     log "$GPU_NUM" "A1111: Building command... GPU_NUM=$GPU_NUM MOCK_GPU=${MOCK_GPU:-0}"
@@ -167,7 +171,26 @@ start() {
     fi
     
     log "$GPU_NUM" "A1111: Running command: $CMD"
-    cd "$WORK_DIR" && eval "$CMD" >> "${WORK_DIR}/logs/output.log" 2>&1 &
+    
+    # 2025-05-16T17:20:00-04:00: Enhanced logging with timestamps and more verbose output
+    log "$GPU_NUM" "Starting A1111 with logs in ${WORK_DIR}/logs/output.log"
+    
+    # Create a wrapper script to ensure proper logging with timestamps
+    cat > "${WORK_DIR}/run_with_logging.sh" << 'EOFSCRIPT'
+#!/bin/bash
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] A1111 startup script beginning execution"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ===== A1111 OUTPUT BEGINS BELOW ====="
+
+eval "$1" 2>&1 | while read -r line; do
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"
+done
+EOFSCRIPT
+    
+    chmod +x "${WORK_DIR}/run_with_logging.sh"
+    
+    # Run the command with the logging wrapper
+    # 2025-05-16T17:25:00-04:00: Fixed to properly quote the command
+    cd "$WORK_DIR" && "${WORK_DIR}/run_with_logging.sh" "$CMD" >> "${WORK_DIR}/logs/output.log" 2>&1 &
     
     echo $! > "${WORK_DIR}/a1111.pid"
     # Save mock state alongside PID

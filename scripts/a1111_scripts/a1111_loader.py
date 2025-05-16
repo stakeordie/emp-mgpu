@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser(description='Load a model into Automatic1111')
 parser.add_argument('-m', '--model', type=str, required=True, help='Model name')
 args = parser.parse_args()
 
-url = "http://localhost:3130/sdapi/v1/options"
+url = "http://localhost:3001/sdapi/v1/options"
 response = requests.get(url)
 options = json.loads(response.text)
 options["sd_model_checkpoint"] = args.model

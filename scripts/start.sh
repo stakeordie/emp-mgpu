@@ -40,6 +40,7 @@ log() {
     esac
 }
 
+# Updated: 2025-05-15T16:36:47-04:00 - Renamed main to main_impl for better script structure
 main() {
     log ""
     log "====================================="
@@ -91,6 +92,8 @@ main() {
         return 1
     fi
     
+    # Moved to after A1111 setup
+    
     # Phase 6: Setup NGINX
     log_phase "6" "Setting up NGINX"
     if ! setup_nginx; then
@@ -98,13 +101,13 @@ main() {
         return 1
     fi
     
-    # Phase 8: Setup ComfyUI instances
-    log_phase "8" "Setting up ComfyUI instances"
-    setup_comfyui
-    
-    # Phase 8.1: Setup Automatic1111 instances
-    log_phase "8.1" "Setting up Automatic1111 instances"
+    # Phase 8: Setup Automatic1111 instances (moved before ComfyUI setup)
+    log_phase "8" "Setting up Automatic1111 instances"
     setup_a1111
+    
+    # Phase 9: Setup ComfyUI instances
+    log_phase "9" "Setting up ComfyUI instances"
+    setup_comfyui
     
     # Phase 9: Setup service scripts
     log_phase "9" "Setting up service scripts"
@@ -121,6 +124,13 @@ main() {
     # Phase 11.1: Start Automatic1111 services
     log_phase "11.1" "Starting Automatic1111 services"
     start_a1111
+    
+    # Added: 2025-05-15T14:54:30-04:00 - Setup static model symlinks after A1111 is started
+    log_phase "11.2" "Setting up static model symlinks"
+    if ! setup_static_model_symlinks; then
+        log "WARNING: Static model symlinks setup failed, continuing anyway"
+        # Don't return error, just continue with a warning
+    fi
 
     # Start Langflow
     log_phase "12" "Starting Langflow"
@@ -138,6 +148,11 @@ main() {
         log "ERROR: Service verification failed"
         # Don't exit - keep container running for debugging
     fi
+    
+    # Added: 2025-05-15T16:36:47-04:00 - Added service verification log statements to main function
+    log "===================================="
+    log "Starting Service Verification"
+    log "===================================="
 
 
 }
@@ -196,10 +211,22 @@ setup_env_vars() {
         # Updated: 2025-04-14T09:40:00-04:00 - Made environment variables provider-agnostic
         echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT}"
         echo "AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY}"
-        echo "AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER}"
+        # AZURE_STORAGE_CONTAINER is deprecated in favor of CLOUD_STORAGE_CONTAINER / CLOUD_STORAGE_TEST_CONTAINER
+        # echo "AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER}"
+        
+        # Added: 2025-05-12T14:38:00-04:00 - Test model move environment variables
+        echo "TEST_MODEL_MOVE=${TEST_MODEL_MOVE:-false}"
+        echo "TEST_MODEL_SOURCE=${TEST_MODEL_SOURCE}"
+        echo "TEST_MODEL_SAVE_DIR=${TEST_MODEL_SAVE_DIR:-/workspace/shared/models/checkpoints}"
         echo "CLOUD_PROVIDER=${CLOUD_PROVIDER:-aws}"
         echo "STORAGE_TEST_MODE=${STORAGE_TEST_MODE:-${AWS_TEST_MODE:-${AZURE_TEST_MODE:-false}}}"
+        # Added: 2025-05-07T12:15:04-04:00 - Persist provider-agnostic container names
+        echo "CLOUD_STORAGE_CONTAINER=${CLOUD_STORAGE_CONTAINER}"
+        echo "CLOUD_STORAGE_TEST_CONTAINER=${CLOUD_STORAGE_TEST_CONTAINER}"
         echo "SKIP_STORAGE_SYNC=${SKIP_STORAGE_SYNC:-${SKIP_AWS_SYNC:-false}}"
+        echo "HF_TOKEN=${HF_TOKEN}"
+        echo "CIVITAI_TOKEN=${CIVITAI_TOKEN}"
+        echo "STATIC_MODELS=${STATIC_MODELS}"
     } >> /etc/environment
     
 
@@ -248,6 +275,9 @@ setup_env_vars() {
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
         echo "WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT}"
         echo "WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT}"
+        echo "HF_TOKEN=${HF_TOKEN}"
+        echo "CIVITAI_TOKEN=${CIVITAI_TOKEN}"
+        echo "STATIC_MODELS=${STATIC_MODELS}"
     # [2025-04-15T16:24:15-04:00] Changed to more generic env.sh name for clarity and consistency
     } > /etc/profile.d/env.sh
     
@@ -446,56 +476,276 @@ setup_preinstalled_nodes() {
 }
 
 # Updated: 2025-04-13T22:00:00-04:00 - Added support for Azure Blob Storage
+# Updated: 2025-05-15T10:35:38-04:00 - Removed cloud provider downloads and added directory creation based on comfy_dir_config.yaml
 sync_models() {
     log "=== Starting model sync process ===" 
     
-    # Check if CLOUD_PROVIDER is set
-    local provider="${CLOUD_PROVIDER:-aws}"
-    log "Using cloud provider: ${provider}"
+    # Added: 2025-04-28T11:52:00-04:00 - Check for existing models before syncing
+    # Added: 2025-05-12T14:38:00-04:00 - Added test model move feature
+    local marker_file="/workspace/shared/.models_synced"
+    local force_sync="${FORCE_MODEL_SYNC:-false}"
+    local models_exist=false
+    local sync_age_days=0
+    local max_sync_age_days=${MAX_SYNC_AGE_DAYS:-7}  # Default to 7 days before forcing a resync
     
-    # Sync based on selected provider
-    if [ "${provider}" = "aws" ]; then
-        # Determine which bucket to use based on STORAGE_TEST_MODE
-        # Added: 2025-04-13T22:10:00-04:00 - Made environment variables provider-agnostic
-        local bucket="emprops-share"
-        if [ "${STORAGE_TEST_MODE:-${AWS_TEST_MODE:-false}}" = "true" ]; then
-            log "Using test bucket: emprops-share-test"
-            bucket="emprops-share-test"
-        else
-            log "Using production bucket: emprops-share"
-        fi
-
-        # Sync models and configs from S3
-        log "Starting sync from s3://$bucket to /workspace/shared..."
-        if [ "${SKIP_STORAGE_SYNC:-${SKIP_AWS_SYNC:-false}}" = "true" ]; then
-            log "Skipping AWS S3 sync (SKIP_STORAGE_SYNC=true)"
-        else
-            log "Running AWS S3 sync command..."
-            aws s3 sync "s3://$bucket" /workspace/shared --size-only --exclude "custom_nodes/*" 2>&1 | tee -a "${START_LOG}"
-            local sync_status=$?
-            if [ $sync_status -eq 0 ]; then
-                log "SUCCESS: AWS S3 sync completed successfully"
-            else
-                log "ERROR: AWS S3 sync failed with status $sync_status"
-                return 1
+    # Check if marker file exists and read timestamp
+    if [ -f "$marker_file" ]; then
+        # Read timestamp from marker file
+        local sync_timestamp=$(cat "$marker_file" | grep "TIMESTAMP=" | cut -d= -f2)
+        if [ -n "$sync_timestamp" ]; then
+            # Calculate age in days
+            local current_timestamp=$(date +%s)
+            local age_seconds=$((current_timestamp - sync_timestamp))
+            sync_age_days=$((age_seconds / 86400))
+            
+            log "Found marker file. Last sync was $sync_age_days days ago."
+            
+            # Check if sync is older than max age
+            if [ $sync_age_days -gt $max_sync_age_days ]; then
+                log "Last sync is older than $max_sync_age_days days. Forcing resync."
+                force_sync=true
             fi
-        fi
-    elif [ "${provider}" = "azure" ]; then
-        # Call the azure_sync function
-        if ! azure_sync; then
-            log "ERROR: Azure sync failed"
-            return 1
+        else
+            log "Marker file exists but has no timestamp. Will check directories."
         fi
     else
-        log "ERROR: Unknown CLOUD_PROVIDER: ${provider}. Must be 'aws' or 'azure'"
+        log "No marker file found. Will check for model directories."
+    fi
+    
+    # Check for key model directories if not forcing sync
+    if [ "$force_sync" != "true" ]; then
+        # Check for common model directories
+        local key_dirs=(
+            "/workspace/shared/models/checkpoints"
+            "/workspace/shared/models/loras"
+            "/workspace/shared/models/controlnet"
+            "/workspace/shared/models/clip_vision"
+        )
+        
+        local dir_count=0
+        local total_size=0
+        local missing_dirs=""
+        
+        for dir in "${key_dirs[@]}"; do
+            if [ -d "$dir" ]; then
+                local dir_size=$(du -sm "$dir" 2>/dev/null | cut -f1)
+                total_size=$((total_size + dir_size))
+                dir_count=$((dir_count + 1))
+                log "Found model directory: $dir (${dir_size}MB)"
+            else
+                missing_dirs="$missing_dirs $dir"
+                log "Missing model directory: $dir"
+            fi
+        done
+        
+        # If we have all directories and they have content, consider models as existing
+        if [ $dir_count -eq ${#key_dirs[@]} ] && [ $total_size -gt 100 ]; then  # At least 100MB total
+            models_exist=true
+            log "All model directories exist with sufficient content (${total_size}MB total)."
+        elif [ $dir_count -gt 0 ]; then
+            log "Some model directories exist (${dir_count}/${#key_dirs[@]}) with ${total_size}MB total."
+            log "Missing directories:$missing_dirs"
+        else
+            log "No model directories found."
+        fi
+    else
+        log "Forcing model sync due to FORCE_MODEL_SYNC=$force_sync"
+    fi
+    
+    # Create directory structure based on comfy_dir_config.yaml
+    log "Creating model directory structure based on comfy_dir_config.yaml"
+    
+    # Check if comfy_dir_config.yaml exists
+    local config_file="${ROOT}/shared/comfy_dir_config.yaml"
+    if [ -f "$config_file" ]; then
+        log "Found comfy_dir_config.yaml, creating directories based on configuration"
+        
+        # Parse YAML file to extract directories
+        # Using grep and awk to extract directory paths
+        local base_path=$(grep "base_path:" "$config_file" | awk '{print $2}')
+        base_path=${base_path:-"/workspace/shared"}
+        
+        log "Using base path: $base_path"
+        
+        # Create directories from YAML file
+        while IFS=: read -r key value; do
+            # Skip lines without colon or with base_path/is_default
+            if [[ -n "$value" && "$key" != *"base_path"* && "$key" != *"is_default"* ]]; then
+                # Clean up key and value
+                key=$(echo "$key" | xargs)
+                value=$(echo "$value" | xargs)
+                
+                # Create directory
+                local dir_path="$base_path/$value"
+                log "Creating directory: $dir_path"
+                mkdir -p "$dir_path"
+            fi
+        done < <(grep -v "^#" "$config_file" | grep ":")
+    else
+        log "WARNING: comfy_dir_config.yaml not found at $config_file"
+        log "No directories will be created automatically"
+    fi
+    
+    # Create marker file with timestamp
+    log "Cloud provider downloads have been disabled. Creating marker file."
+    echo "TIMESTAMP=$(date +%s)" > "$marker_file"
+    echo "PROVIDER=none" >> "$marker_file"
+    log "Created marker file: $marker_file"
+    
+    log "=== Model sync process complete ===" 
+    
+    # Added: 2025-05-12T14:38:00-04:00 - Test model move feature
+    if [ "${TEST_MODEL_MOVE:-false}" = "true" ]; then
+        test_model_move
+    fi
+}
+
+# Added: 2025-05-12T14:38:00-04:00 - Function to test model loading by copying an existing model
+test_model_move() {
+    local source_file="${TEST_MODEL_SOURCE}"
+    local save_dir="${TEST_MODEL_SAVE_DIR:-/workspace/shared/models/checkpoints}"
+    
+    log "=== Starting test model move process ==="
+    log "TEST_MODEL_MOVE is enabled"
+    
+    if [ -z "$source_file" ]; then
+        log "ERROR: TEST_MODEL_SOURCE is not set. Please specify a source model filename."
         return 1
     fi
     
-    log "=== Model sync process complete ==="
+    # Ensure the full path to the source file
+    if [[ "$source_file" != /* ]]; then
+        source_file="$save_dir/$source_file"
+    fi
+    
+    log "Source model file: $source_file"
+    
+    # Check if source file exists
+    if [ ! -f "$source_file" ]; then
+        log "ERROR: Source model file does not exist: $source_file"
+        return 1
+    fi
+    
+    # Create target filename by adding 'x' before the extension
+    local filename=$(basename "$source_file")
+    local extension="${filename##*.}"
+    local name="${filename%.*}"
+    local target_file="$save_dir/${name}x.$extension"
+    
+    log "Target model file: $target_file"
+    
+    # Copy the file
+    log "Copying $source_file to $target_file"
+    cp "$source_file" "$target_file"
+    
+    if [ $? -eq 0 ]; then
+        log "SUCCESS: Test model file created successfully"
+        log "New model should be available as '${name}x'"
+    else
+        log "ERROR: Failed to create test model file"
+        return 1
+    fi
+    
+    log "=== Test model move process complete ==="
+    return 0
 }
 
 # Added: 2025-04-13T21:55:00-04:00 - Azure Blob Storage sync function
 # Updated: 2025-04-14T11:05:00-04:00 - Fixed Azure CLI sync and improved fallback
+
+# Added: 2025-04-24T15:54:42-04:00 - Google Cloud Storage sync function
+# Updated: 2025-04-24T17:24:30-04:00 - Enhanced debugging and authentication verification
+gcs_sync() {
+    log "Starting Google Cloud Storage sync process"
+    
+    # Check if gsutil is installed
+    if ! command -v gsutil &> /dev/null; then
+        log "ERROR: gsutil command not found. Please install Google Cloud SDK."
+        return 1
+    fi
+    
+    # Check for credentials and set default if not specified
+    if [ -z "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
+        # Default to stake-or-die.json credentials
+        # Updated: 2025-04-24T17:28:41-04:00 - Fixed credentials filename to match Dockerfile
+        export GOOGLE_APPLICATION_CREDENTIALS="/credentials/stake-or-die.json"
+        log "GOOGLE_APPLICATION_CREDENTIALS not set. Using default: ${GOOGLE_APPLICATION_CREDENTIALS}"
+    else
+        log "Using credentials from: ${GOOGLE_APPLICATION_CREDENTIALS}"
+    fi
+    
+    # Verify credentials file exists
+    if [ ! -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
+        log "ERROR: Credentials file not found at: ${GOOGLE_APPLICATION_CREDENTIALS}"
+        log "Checking for alternative credentials..."
+        
+        # Try emprops.json as fallback
+        if [ -f "/credentials/emprops.json" ]; then
+            export GOOGLE_APPLICATION_CREDENTIALS="/credentials/emprops.json"
+            log "Using fallback credentials: ${GOOGLE_APPLICATION_CREDENTIALS}"
+        else
+            log "ERROR: No valid credentials found. GCS sync may fail."
+        fi
+    fi
+    
+    # Print credentials file content for debugging (only first few lines)
+    log "Credentials file content (first 5 lines):"
+    head -n 5 "${GOOGLE_APPLICATION_CREDENTIALS}" | grep -v "private_key" | tee -a "${START_LOG}"
+    
+    # Activate service account explicitly
+    log "Activating service account..."
+    gcloud auth activate-service-account --key-file="${GOOGLE_APPLICATION_CREDENTIALS}" 2>&1 | tee -a "${START_LOG}"
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log "ERROR: Failed to activate service account. Check credentials file."
+        return 1
+    fi
+    
+    # Verify authentication
+    log "Verifying GCS authentication..."
+    gcloud auth list 2>&1 | tee -a "${START_LOG}"
+    
+    # Determine which bucket to use based on STORAGE_TEST_MODE
+    local bucket="emprops-share"
+    if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
+        log "Using test bucket: emprops-share-test"
+        bucket="emprops-share-test"
+    else
+        log "Using production bucket: emprops-share"
+    fi
+    
+    # Check if sync should be skipped
+    if [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
+        log "Skipping Google Cloud Storage sync (SKIP_STORAGE_SYNC=true)"
+        return 0
+    fi
+    
+    # Create the target directory if it doesn't exist
+    mkdir -p /workspace/shared
+    
+    # Test bucket access before syncing
+    log "Testing bucket access: gs://${bucket}"
+    gsutil ls "gs://${bucket}" 2>&1 | head -n 5 | tee -a "${START_LOG}"
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log "ERROR: Cannot access bucket gs://${bucket}. Check permissions or bucket name."
+        log "Available buckets:"
+        gsutil ls 2>&1 | tee -a "${START_LOG}"
+        return 1
+    fi
+    
+    # Run the gsutil sync command with verbose output
+    # Updated: 2025-04-24T17:36:19-04:00 - Fixed gsutil rsync command options
+    log "Running gsutil sync command from gs://${bucket} to /workspace/shared..."
+    gsutil -m rsync -r "gs://${bucket}" /workspace/shared 2>&1 | tee -a "${START_LOG}"
+    local sync_status=$?
+    
+    if [ $sync_status -eq 0 ]; then
+        log "SUCCESS: Google Cloud Storage sync completed successfully"
+        return 0
+    else
+        log "ERROR: Google Cloud Storage sync failed with status ${sync_status}"
+        return 1
+    fi
+}
 azure_sync() {
     log "=== Starting Azure Blob Storage sync process ===" 
     
@@ -1004,6 +1254,7 @@ setup_comfyui() {
 
 install_a1111_dependencies() {
     # 2025-04-12 19:23: Updated function to install all Automatic1111 dependencies from requirements.txt
+    # 2025-05-16T16:23:00-04:00: Updated to use conda environment for A1111
     log "Installing Automatic1111 dependencies..."
     
     # Get the working directory for GPU 0 (or the first instance)
@@ -1015,12 +1266,16 @@ install_a1111_dependencies() {
         return 1
     fi
     
-    # Install all dependencies from requirements.txt
-    log "Installing dependencies from requirements.txt..."
-    if pip install -r "${WORK_DIR}/requirements.txt"; then
-        log "Successfully installed all dependencies from requirements.txt"
+    # Install all dependencies from requirements.txt using the a1111 conda environment
+    log "Installing dependencies from requirements.txt in a1111 conda environment..."
+    if source /opt/conda/bin/activate a1111 && pip install -r "${WORK_DIR}/requirements.txt"; then
+        log "Successfully installed all dependencies from requirements.txt in a1111 conda environment"
+        # Return to base environment
+        source /opt/conda/bin/activate base
     else
-        log "ERROR: Failed to install dependencies from requirements.txt"
+        log "ERROR: Failed to install dependencies from requirements.txt in a1111 conda environment"
+        # Return to base environment even if installation fails
+        source /opt/conda/bin/activate base
         return 1
     fi
     
@@ -1028,7 +1283,7 @@ install_a1111_dependencies() {
 }
 
 setup_a1111() {
-    # 2025-04-12 20:08: Updated setup function for Automatic1111 to fix order of operations
+    # Updated: 2025-05-15T10:48:47-04:00 - Updated setup function to include model download and loading process
     log "Setting up Automatic1111..."
     
     # Add --cpu flag in test mode
@@ -1053,6 +1308,131 @@ setup_a1111() {
         return 1
     fi
     
+    # Updated: 2025-05-15T13:24:36-04:00 - Simplified A1111 models setup
+    log "Setting up models directories..."
+    
+    # Check if we should skip storage sync
+    if [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
+        log "SKIP_STORAGE_SYNC=true: Skipping sd_models repository clone"
+    else
+        # Clone SD models repository
+        log "Cloning SD models repository..."
+        if [ ! -d "/workspace/shared/sd_models" ]; then
+            log "Cloning sd_models repository..."
+            git clone https://github.com/stakeordie/sd_models.git "/workspace/shared/sd_models" || {
+                log "WARNING: Failed to clone sd_models repository"
+            }
+        else
+            log "sd_models repository already exists, skipping clone"
+        fi
+    fi
+    
+    # Create Stable-diffusion directory in sd_models if it doesn't exist
+    log "Creating Stable-diffusion directory in sd_models if needed..."
+    mkdir -p "/workspace/shared/sd_models/Stable-diffusion"
+    
+    # For each A1111 instance, create a symlink from its models directory to sd_models
+    for i in $(seq 0 $((NUM_GPUS-1))); do
+        log "Setting up models directory for A1111 GPU $i..."
+        A1111_DIR="/workspace/a1111_gpu${i}"
+        
+        # Create the A1111 directory if it doesn't exist
+        mkdir -p "$A1111_DIR"
+        
+        # Remove existing models directory if it exists
+        if [ -d "$A1111_DIR/models" ] || [ -L "$A1111_DIR/models" ]; then
+            log "Removing existing models directory/symlink for GPU $i..."
+            rm -rf "$A1111_DIR/models"
+        fi
+        
+        # Create symlink from A1111 models to shared sd_models
+        log "Creating symlink from A1111 GPU $i models to shared sd_models..."
+        ln -sf "/workspace/shared/sd_models" "$A1111_DIR/models" || {
+            log "ERROR: Failed to create symlink for GPU $i"
+            return 1
+        }
+        log "Successfully created symlink for A1111 GPU $i"
+    done
+    
+    # Download models
+    log "Downloading models..."
+    if [ "${SKIP_MODEL_DOWNLOAD:-false}" = "true" ] || [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
+        log "Skipping model download (SKIP_MODEL_DOWNLOAD=${SKIP_MODEL_DOWNLOAD:-false}, SKIP_STORAGE_SYNC=${SKIP_STORAGE_SYNC:-false})"
+    else
+        # Updated: 2025-05-15T13:24:36-04:00 - Changed to download models to the Stable-diffusion subdirectory
+        cd "/workspace/shared/sd_models/Stable-diffusion" || {
+            log "ERROR: Failed to change to sd_models/Stable-diffusion directory"
+            return 1
+        }
+        
+        # Added: 2025-05-15T18:48:36-04:00 - Check if models were already downloaded by MGPU script
+        local existing_model_count=$(ls -1 *.safetensors *.ckpt 2>/dev/null | wc -l)
+        if [ "$existing_model_count" -gt 5 ]; then
+            log "Found $existing_model_count existing models, skipping download"
+            return 0
+        fi
+        
+        log "Starting model download process..."
+        MODELS=""
+        
+        # Updated: 2025-05-16T16:19:13-04:00 - Modified to handle STORAGE_TEST_MODE
+        ## SDXL
+            log "Downloading SDXL Base..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0_0.9vae.safetensors,"
+        
+        # Only download additional models if not in test mode
+        if [ "${STORAGE_TEST_MODE:-false}" != "true" ]; then
+            log "STORAGE_TEST_MODE is not true, downloading additional models..."
+            
+            # Download JuggernautXL
+            log "Downloading JuggernautXL..."
+            wget --quiet --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",juggernautXL_v8Rundiffusion.safetensors"
+            
+            # Download SD 2.1
+            log "Downloading SD 2.1..."
+            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",v2-1_768-ema-pruned.safetensors"
+            
+            # Download SDXL Base
+            log "Downloading SDXL Base..."
+            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",sd_xl_base_1.0_0.9vae.safetensors"
+
+            # Download EpiCPhotoGasm
+            log "Downloading EpiCPhotoGasm..."
+            wget --quiet --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/223670?type=Model&format=SafeTensor&size=full&fp=fp16" -O epiCPhotoGasm.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="epiCPhotoGasm.safetensors,"
+
+            ## SDXL
+            log "Downloading SDXL Base..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0_0.9vae.safetensors,"
+            
+            ##SDXL Refiner
+            log "Downloading SDXL Refiner..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0_0.9vae.safetensors,"
+            
+            # OLD 1.5
+            log "Downloading SD 1.5..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.ckpt 2>&1 | tee -a "$START_LOG" && MODELS+="v1-5-pruned.ckpt,"
+            
+            # OLD 2.1  
+            log "Downloading SD 2.1..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.ckpt 2>&1 | tee -a "$START_LOG" && MODELS+="v2-1_768-ema-pruned.ckpt,"
+            
+            # OLD SDXL
+            log "Downloading SDXL Base..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0.safetensors,"
+            
+            # OLD SDXL Refiner
+            log "Downloading SDXL Refiner..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0.safetensors,"
+            
+            # OLD JuggerNautXL
+            log "Downloading JuggerNautXL..."
+            wget --no-verbose --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="juggernautXL_v8Rundiffusion.safetensors"
+
+        fi
+        
+        log "Model download process complete"
+    fi
+    
     # Start services
     log "Starting Automatic1111 GPU services..."
     if ! mgpu a1111 start all; then
@@ -1066,6 +1446,27 @@ setup_a1111() {
         log "ERROR: Automatic1111 service verification failed"
         return 1
     }
+    
+    # Wait for services to initialize
+    log "Waiting for Automatic1111 services to initialize..."
+    log "WAITING TO START UP BEFORE LOADING MODELS..."
+    sleep 75
+    
+    # Load models
+    if [ -n "$MODELS" ]; then
+        log "Loading models: $MODELS"
+        IFS=',' read -r -a model_array <<< "$MODELS"
+        for model in "${model_array[@]}"; do
+            if [ -n "$model" ]; then
+                log "Loading model: $model"
+                python3 /scripts/a1111_scripts/a1111_loader.py -m "$model" || {
+                    log "WARNING: Failed to load model: $model"
+                }
+            fi
+        done
+    else
+        log "No models to load"
+    fi
     
     log "Automatic1111 setup complete"
     return 0
@@ -1548,23 +1949,128 @@ make_auth_request() {
 
 setup_langflow() {
     log "Setting up Langflow..."
+    # Ensure the Langflow directory exists
+    mkdir -p /workspace/langflow
     
-    # Start Langflow service
-    if ! service langflow start; then
-        log "ERROR: Failed to start Langflow"
+    # Copy the Langflow configuration file if it doesn't exist
+    if [ ! -f /workspace/langflow/config.yaml ]; then
+        cp /scripts/langflow/config.yaml /workspace/langflow/
+    fi
+    
+    # Start Langflow in the background
+    cd /workspace/langflow
+    nohup langflow run --host 0.0.0.0 --port 7860 > /workspace/logs/langflow.log 2>&1 &
+}
+
+# Updated: 2025-05-15T14:54:30-04:00 - Function to create symlinks from static-models.json
+setup_static_model_symlinks() {
+    log "Setting up static model symlinks..."
+    
+    # Path to static-models.json
+    STATIC_MODELS_JSON="/workspace/shared/static-models.json"
+    
+    # Check if the file exists
+    if [ ! -f "$STATIC_MODELS_JSON" ]; then
+        log "WARNING: static-models.json not found at $STATIC_MODELS_JSON"
         return 1
     fi
     
-    log "Langflow setup complete"
-    return 0
+    log "Reading static-models.json..."
+    # Use jq to parse the JSON file
+    if ! command -v jq &> /dev/null; then
+        log "ERROR: jq is required but not installed"
+        return 1
+    fi
+    
+    # Base directories
+    SD_MODELS_DIR="/workspace/shared/sd_models"
+    COMFY_MODELS_DIR="/workspace/shared/models"
+    
+    # Check if SD_MODELS_DIR exists
+    if [ ! -d "$SD_MODELS_DIR" ]; then
+        log "ERROR: SD models directory does not exist: $SD_MODELS_DIR"
+        return 1
+    fi
+    
+    # Create the models directory if it doesn't exist
+    mkdir -p "$COMFY_MODELS_DIR"
+    
+    # Get the number of symlinks
+    SYMLINKS_COUNT=$(jq '.symlinks | length' "$STATIC_MODELS_JSON")
+    log "Found $SYMLINKS_COUNT symlink entries in static-models.json"
+    
+    # Track success/failure counts
+    SUCCESS_COUNT=0
+    FAILURE_COUNT=0
+    
+    # Process each symlink
+    for i in $(seq 0 $((SYMLINKS_COUNT-1))); do
+        # Get source and target paths
+        SOURCE=$(jq -r ".symlinks[$i].source" "$STATIC_MODELS_JSON")
+        TARGET=$(jq -r ".symlinks[$i].target" "$STATIC_MODELS_JSON")
+        DESCRIPTION=$(jq -r ".symlinks[$i].description" "$STATIC_MODELS_JSON")
+        
+        # Full paths
+        SOURCE_PATH="$SD_MODELS_DIR/$SOURCE"
+        TARGET_PATH="$COMFY_MODELS_DIR/$TARGET"
+        
+        # Create target directory if it doesn't exist
+        TARGET_DIR=$(dirname "$TARGET_PATH")
+        mkdir -p "$TARGET_DIR"
+        
+        log "Processing symlink: $SOURCE → $TARGET ($DESCRIPTION)"
+        
+        # Check if source exists
+        if [ ! -f "$SOURCE_PATH" ]; then
+            log "WARNING: Source file does not exist: $SOURCE_PATH"
+            # List directory contents to help diagnose issues
+            SOURCE_DIR=$(dirname "$SOURCE_PATH")
+            if [ -d "$SOURCE_DIR" ]; then
+                log "Available files in $(dirname "$SOURCE_PATH"):"
+                ls -la "$SOURCE_DIR" | grep -v '^d' | awk '{print $9}' | grep -v '^$' | while read -r file; do
+                    log "  - $file"
+                done
+            else
+                log "Source directory does not exist: $SOURCE_DIR"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT+1))
+            continue
+        fi
+        
+        # Remove existing target if it exists
+        if [ -e "$TARGET_PATH" ] || [ -L "$TARGET_PATH" ]; then
+            log "Removing existing file/symlink: $TARGET_PATH"
+            rm -f "$TARGET_PATH"
+        fi
+        
+        # Create symlink
+        log "Creating symlink: $SOURCE_PATH → $TARGET_PATH"
+        ln -sf "$SOURCE_PATH" "$TARGET_PATH"
+        if [ $? -eq 0 ]; then
+            log "Successfully created symlink for $DESCRIPTION"
+            SUCCESS_COUNT=$((SUCCESS_COUNT+1))
+        else
+            log "ERROR: Failed to create symlink: $SOURCE_PATH → $TARGET_PATH"
+            FAILURE_COUNT=$((FAILURE_COUNT+1))
+        fi
+    done
+    
+    # Summary
+    log "Static model symlinks setup complete: $SUCCESS_COUNT successful, $FAILURE_COUNT failed"
+    
+    # Return success if at least one symlink was created successfully
+    if [ $SUCCESS_COUNT -gt 0 ]; then
+        return 0
+    else
+        log "ERROR: No symlinks were created successfully"
+        return 1
+    fi
 }
 
+
+# Updated: 2025-05-15T16:36:47-04:00 - Fixed script structure by properly enclosing Redis worker setup in function
 setup_redis_workers() {
-    log ""
-    log "===================================="
-    log "Starting Service Verification"
-    log "===================================="
-    
+    log "Setting up Redis Workers..."
     
     local release_url="https://api.github.com/repos/stakeordie/emp-redis/releases/latest"
     local download_url
@@ -1707,7 +2213,7 @@ start_redis_workers() {
     log "Worker Watchdog service started."
 }
 
-all_services_ok=true
+# Updated: 2025-05-15T16:36:47-04:00 - Call the main function and then keep container running
 main
 
 tail -f /dev/null

@@ -1,0 +1,31 @@
+{
+	"folders": [
+		{
+			"name": "emp-mgpu",
+			"path": "."
+		},
+		{
+			"name": "emprops_shared",
+			"path": "../../../EmProps/comfy/emprops_shared"
+		},
+		{
+			"path": "../emprops_comfy_nodes"
+		},
+		{
+			"path": "../emprops_component_library"
+		},
+		{
+			"path": "../ComfyUI-VideoHelperSuite"
+		},
+		{
+			"path": "../../emp-redis"
+		},
+		{
+			"path": "../ComfyUIFork"
+		},
+		{
+			"path": "../../emprops-ai-infra"
+		}
+	],
+	"settings": {}
+}

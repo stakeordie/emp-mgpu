@@ -7,8 +7,18 @@ x-base-service: &base-service
     platforms:
       - linux/amd64
     args:
+      # Updated: 2025-05-14T18:42:32-04:00 - Added CUDA version selection
+      CUDA_VERSION: ${CUDA_VERSION:-12.8}
       FORCE_FRESH_CLONE: ${FORCE_FRESH_CLONE:-false}
   ports:
+    - "2001:2001"
+    - "2002:2002"
+    - "2003:2003"
+    - "2004:2004"
+    - "2005:2005"
+    - "2006:2006"
+    - "2007:2007"
+    - "2008:2008"
     - "3188:3188"
     - "3189:3189"
     - "3190:3190"
@@ -30,6 +40,7 @@ services:
     build:
       args:
         COMFY_REPO_URL: https://github.com/comfyanonymous/ComfyUI.git
+        CUDA_VERSION: 12.8
 
   comfyui-fork:
     <<: *base-service
@@ -40,6 +51,8 @@ services:
     build:
       args:
         COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git
+        # Updated: 2025-05-14T18:42:32-04:00 - Using CUDA 12.8 for this service
+        CUDA_VERSION: 12.8
 
   comfyui-fork-devel:
     <<: *base-service
@@ -52,22 +65,36 @@ services:
       - STORAGE_TEST_MODE=true
       - SKIP_STORAGE_SYNC=true
       - CLOUD_PROVIDER=aws
-      - AZURE_STORAGE_CONTAINER=emprops-share-test
     build:
       args:
         COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git
-  comfyui-fork-devel-a1111:
+        # Updated: 2025-05-14T18:42:32-04:00 - Using CUDA 12.8 for this service
+        CUDA_VERSION: 12.8
+  emprops-latest:
     <<: *base-service
-    container_name: comfyui-fork-devel-a1111
-    image: emprops/comfyui-fork-devel-a1111:latest
-    environment:
-      - COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
-      - TEST_GPUS=1
-      # Updated: 2025-04-14T10:15:00-04:00 - Testing Azure sync
-      - STORAGE_TEST_MODE=true
-      - SKIP_STORAGE_SYNC=true
-      - CLOUD_PROVIDER=aws
-      - AZURE_STORAGE_CONTAINER=emprops-share-test
+    container_name: emprops-latest
+    image: emprops/emprops-latest:latest
     build:
       args:
+        # Updated: 2025-05-14T18:42:32-04:00 - Using CUDA 12.8 for this service
+        BASE_IMAGE: pytorch/pytorch:latest
+        COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git
+  emprops-27128:
+    <<: *base-service
+    container_name: emprops-27128
+    image: emprops/emprops-27128:latest
+    build:
+      args:
+        # Updated: 2025-05-14T18:42:32-04:00 - Using CUDA 12.8 for this service
+        BASE_IMAGE: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+        COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git
+  
+  emprops-27118:
+    <<: *base-service
+    container_name: emprops-27118
+    image: emprops/emprops-27118:latest
+    build:
+      args:
+        # Updated: 2025-05-14T18:42:32-04:00 - Using CUDA 11.8 for this service
+        BASE_IMAGE: pytorch/pytorch:2.7.0-cuda11.8-cudnn9-runtime
         COMFY_REPO_URL: https://github.com/stakeordie/ComfyUI.git

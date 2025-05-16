@@ -479,7 +479,7 @@ setup_comfyui() {
     
     # Use COMFY_REPO_URL environment variable with fallback
     local repo_url="${COMFY_REPO_URL:-https://github.com/comfyanonymous/ComfyUI.git}"
-    local base_commit="0c04a6ae780b5eefb1a701467439ae1235607a4f"
+    local base_commit="02a1b01aad28470f06c8b4f95b90914413d3e4c8"
     
     log "Cloning ComfyUI from ${repo_url} for GPU ${gpu_id}..."
     if ! git clone "$repo_url" "$target_dir"; then
@@ -491,9 +491,10 @@ setup_comfyui() {
     
     # Handle different branches based on whether it's a fork
     if [ "$repo_url" = "https://github.com/stakeordie/ComfyUI.git" ]; then
-        log "Fork detected, checking out websocket_version branch..."
-        if ! git checkout websocket_version; then
-            log "ERROR: Failed to checkout websocket_version branch"
+        # Updated: 2025-05-12T15:52:00-04:00 - Changed from websocket_version to forward branch
+        log "Fork detected, checking out forward branch..."
+        if ! git checkout forward; then
+            log "ERROR: Failed to checkout forward branch"
             return 1
         fi
     else
@@ -681,18 +682,19 @@ setup_a1111() {
     
     MODELS_FOUND=false
     
-    # Define the models we want to look for with their download URLs
-    # Added: 2025-04-14T21:26:00-04:00 - Added model download URLs for individual downloads
-    declare -A MODEL_URLS=(
-        ["juggernautXL_v8Rundiffusion.safetensors"]="https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16"
-        ["v1-5-pruned.safetensors"]="https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors"
-        ["v2-1_768-ema-pruned.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors"
-        ["sd_xl_base_1.0_0.9vae.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors"
-        ["sd_xl_refiner_1.0_0.9vae.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0_0.9vae.safetensors"
-        ["v1-5-pruned.ckpt"]="https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.ckpt"
-        ["v2-1_768-ema-pruned.ckpt"]="https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.ckpt"
-        ["sd_xl_base_1.0.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
-        ["sd_xl_refiner_1.0.safetensors"]="https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors"
+    # Added: 2025-05-15T18:54:19-04:00 - Removed model download URLs to avoid duplication with start.sh
+    # Model downloads will now be handled exclusively by start.sh
+    # Define the models we want to look for (for symlink creation only)
+    declare -A MODEL_NAMES=(
+        ["juggernautXL_v8Rundiffusion.safetensors"]="JuggernautXL v8 Rundiffusion"
+        ["v1-5-pruned.safetensors"]="SD 1.5"
+        ["v2-1_768-ema-pruned.safetensors"]="SD 2.1"
+        ["sd_xl_base_1.0_0.9vae.safetensors"]="SDXL Base"
+        ["sd_xl_refiner_1.0_0.9vae.safetensors"]="SDXL Refiner"
+        ["v1-5-pruned.ckpt"]="SD 1.5 (ckpt)"
+        ["v2-1_768-ema-pruned.ckpt"]="SD 2.1 (ckpt)"
+        ["sd_xl_base_1.0.safetensors"]="SDXL Base (original)"
+        ["sd_xl_refiner_1.0.safetensors"]="SDXL Refiner (original)"
     )
     
     # Added: 2025-04-14T21:29:00-04:00 - Define model name aliases (different capitalizations)
@@ -703,15 +705,16 @@ setup_a1111() {
     # Set up a counter for downloaded models
     MODELS_DOWNLOADED=0
     
-    # Process each model
-    # Added: 2025-04-14T21:29:00-04:00 - Enhanced to handle model aliases and different capitalizations
-    for model_name in "${!MODEL_URLS[@]}"; do
+    # Added: 2025-05-15T18:54:19-04:00 - Updated to only create symlinks for existing models
+    # Process each model (symlink creation only, no downloads)
+    for model_name in "${!MODEL_NAMES[@]}"; do
         MODEL_FOUND=false
+        model_desc="${MODEL_NAMES[$model_name]}"
         
         # Check if model exists in any of the ComfyUI model directories
         for comfy_dir in "${COMFY_MODEL_DIRS[@]}"; do
             if [ -f "${comfy_dir}/${model_name}" ]; then
-                log "Found model ${model_name} in ${comfy_dir}, creating symlink"
+                log "Found model ${model_name} (${model_desc}) in ${comfy_dir}, creating symlink"
                 # [2025-04-16T20:34:27-04:00] Updated to use SHARED_MODELS_DIR instead of target_dir/models
                 if ! ln -sf "${comfy_dir}/${model_name}" "${SHARED_MODELS_DIR}/Stable-diffusion/${model_name}"; then
                     log "ERROR: Failed to create symlink for ${model_name}"
@@ -724,36 +727,18 @@ setup_a1111() {
             fi
         done
         
-        # If model not found in ComfyUI directories, download it
+        # If model not found, just log it - downloads will be handled by start.sh
         if [ "$MODEL_FOUND" = "false" ]; then
-            # [2025-04-15T09:44:38-04:00] Block downloads if STORAGE_TEST_MODE=true
-            if [ "${STORAGE_TEST_MODE:-false}" = "true" ]; then
-                log "[TEST MODE] STORAGE_TEST_MODE=true: Skipping download of missing model ${model_name}. No download will be attempted."
-                continue
-            fi
-            log "Model ${model_name} not found in ComfyUI directories, attempting to download"
-            
-            # Get the download URL
-            download_url="${MODEL_URLS[$model_name]}"
-            target_file="${target_dir}/models/Stable-diffusion/${model_name}"
-            
-            # Download the model
-            log "Downloading ${model_name} from ${download_url}"
-            if curl -L -o "$target_file" "$download_url" --progress-bar; then
-                log "Successfully downloaded ${model_name}"
-                MODELS_FOUND=true
-                MODELS_DOWNLOADED=$((MODELS_DOWNLOADED + 1))
-            else
-                log "WARNING: Failed to download ${model_name}"
-            fi
+            log "Model ${model_name} (${model_desc}) not found in ComfyUI directories - will be downloaded by start.sh if needed"
         fi
     done
     
+    # Added: 2025-05-15T18:54:19-04:00 - Updated to only create symlinks for existing models
     # Process model aliases (different capitalizations)
     for alias_name in "${!MODEL_ALIASES[@]}"; do
         original_name="${MODEL_ALIASES[$alias_name]}"
-        target_file="${target_dir}/models/Stable-diffusion/${original_name}"
-        alias_file="${target_dir}/models/Stable-diffusion/${alias_name}"
+        target_file="${SHARED_MODELS_DIR}/Stable-diffusion/${original_name}"
+        alias_file="${SHARED_MODELS_DIR}/Stable-diffusion/${alias_name}"
         
         # If the original model exists, create a symlink with the alias name
         if [ -f "$target_file" ]; then
@@ -775,7 +760,7 @@ setup_a1111() {
             done
             
             if [ "$ALIAS_FOUND" = "false" ]; then
-                log "Alias model ${alias_name} not found, skipping"
+                log "Alias model ${alias_name} not found - will be handled by start.sh if needed"
             fi
         fi
     done
@@ -783,168 +768,22 @@ setup_a1111() {
     log "Downloaded $MODELS_DOWNLOADED models that weren't found locally"
     
     # If no models were found, clone the repo
-    # Added: 2025-04-14T20:45:00-04:00 - Added model repository cloning as fallback
-    if [ "${STORAGE_TEST_MODE:-false}" = "false" ]; then
-        log "No models found in ComfyUI directories, cloning sd_models repo"
-        
-        # Install git-lfs if not already installed
-        if ! command -v git-lfs &> /dev/null; then
-            log "Installing git-lfs"
-            apt-get update && apt-get install -y git-lfs
-            git lfs install
-        fi
-        
-        # Clone the models repo
-        log "Cloning sd_models repo"
-        git clone https://github.com/stakeordie/sd_models.git /tmp/emprops_models_repo
-        rm -rf /tmp/emprops_models_repo/.git
-        
-        # Copy models to the shared a1111_models directory
-        log "Copying models to /workspace/shared/a1111_models"
-        rsync -avz --progress /tmp/emprops_models_repo/ "/workspace/shared/a1111_models/"
-        
-        # Clean up
-        rm -rf /tmp/emprops_models_repo
+    # Added: 2025-05-15T18:54:19-04:00 - Removed model repository cloning to avoid duplication with start.sh
+    if [ "$MODELS_FOUND" = "false" ]; then
+        log "No models found in ComfyUI directories - models will be downloaded by start.sh if needed"
+    else
+        log "Successfully created symlinks for existing models"
     fi
+        
+    # No cleanup needed
     
     log "Automatic1111 setup complete for GPU ${gpu_id}"
     return 0
 }
 
-# Function to create symbolic links based on YAML configuration
-create_symbolic_links_from_yaml() {
-    # 2025-04-13 21:05: Updated function to create symbolic links for contents of directories
-    local target_dir=$1
-    local config_file="${ROOT}/shared/a1111_dir_config.yaml"
-    
-    # Check if config file exists
-    if [ ! -f "$config_file" ]; then
-        log "ERROR: Configuration file $config_file not found"
-        return 1
-    fi
-    
-    log "Using configuration file: $config_file"
-    
-    # Use Python to parse the YAML file and generate symbolic link commands
-    python3 -c "
-# 2025-04-13 21:05: Python script to parse YAML configuration and create symbolic links for contents of directories
-import yaml
-import os
-import sys
-import glob
-
-try:
-    # Load YAML configuration
-    with open('$config_file', 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # Get automatic1111 configuration
-    a1111_config = config.get('automatic1111', {})
-    if not a1111_config:
-        print('ERROR: No automatic1111 configuration found in $config_file')
-        sys.exit(1)
-    
-    # Get base path
-    base_path = a1111_config.get('base_path', '/workspace/shared')
-    
-    # Process model directories
-    models_config = a1111_config.get('models', {})
-    for model_type, mapping in models_config.items():
-        if '->' in mapping:
-            source_path, target_path = mapping.split('->')
-            source_path = source_path.strip()
-            target_path = target_path.strip()
-            
-            # Create full paths
-            full_source_path = os.path.join(base_path, source_path)
-            full_target_path = os.path.join('$target_dir', target_path)
-            
-            # Remove trailing slashes for consistency
-            if full_source_path.endswith('/'):
-                full_source_path = full_source_path[:-1]
-            if full_target_path.endswith('/'):
-                full_target_path = full_target_path[:-1]
-            
-            # Create the target directory if it doesn't exist
-            print(f'mkdir -p "{full_target_path}"')
-            
-            # Find all files in the source directory
-            source_files = glob.glob(f'{full_source_path}/*')
-            if not source_files:
-                print(f'WARNING: No files found in {full_source_path}')
-                continue
-                
-            # Create symbolic links for each file in the source directory
-            for source_file in source_files:
-                file_name = os.path.basename(source_file)
-                target_file = os.path.join(full_target_path, file_name)
-                
-                # Remove existing file if it exists
-                print(f'rm -f "{target_file}"')
-                
-                # Create symbolic link for the file
-                print(f'ln -sf "{source_file}" "{target_file}"')
-    
-    # Process other directories
-    directories_config = a1111_config.get('directories', {})
-    for dir_type, mapping in directories_config.items():
-        if '->' in mapping:
-            source_path, target_path = mapping.split('->')
-            source_path = source_path.strip()
-            target_path = target_path.strip()
-            
-            # Create full paths
-            full_source_path = os.path.join(base_path, source_path)
-            full_target_path = os.path.join('$target_dir', target_path)
-            
-            # Remove trailing slashes for consistency
-            if full_source_path.endswith('/'):
-                full_source_path = full_source_path[:-1]
-            if full_target_path.endswith('/'):
-                full_target_path = full_target_path[:-1]
-            
-            # Create the target directory if it doesn't exist
-            print(f'mkdir -p "{full_target_path}"')
-            
-            # Find all files in the source directory
-            source_files = glob.glob(f'{full_source_path}/*')
-            if not source_files:
-                print(f'WARNING: No files found in {full_source_path}')
-                continue
-                
-            # Create symbolic links for each file in the source directory
-            for source_file in source_files:
-                file_name = os.path.basename(source_file)
-                target_file = os.path.join(full_target_path, file_name)
-                
-                # Remove existing file if it exists
-                print(f'rm -f "{target_file}"')
-                
-                # Create symbolic link for the file
-                print(f'ln -sf "{source_file}" "{target_file}"')
-            
-except Exception as e:
-    print(f'ERROR: Failed to parse YAML configuration: {str(e)}')
-    sys.exit(1)
-" | while read -r cmd; do
-        if [[ "$cmd" == ERROR:* ]]; then
-            log "$cmd"
-            return 1
-        elif [[ "$cmd" == WARNING:* ]]; then
-            log "$cmd"
-        else
-            log "Executing: $cmd"
-            eval "$cmd" || {
-                log "ERROR: Failed to execute command: $cmd"
-                # Continue even if a single command fails
-                # return 1
-            }
-        fi
-    done
-    
-    log "Symbolic links created successfully"
-    return 0
-}
+# Added: 2025-05-15T19:02:00-04:00 - Removed unused create_symbolic_links_from_yaml function
+# This function was defined but never called, and referenced a non-existent config file
+# Symlinks are now handled by setup_static_model_symlinks in start.sh using static-models.json
 
 # Function to setup all GPU directories
 setup_all_gpus() {
