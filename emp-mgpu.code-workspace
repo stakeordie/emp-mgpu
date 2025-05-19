@@ -25,6 +25,9 @@
 		},
 		{
 			"path": "../../emprops-ai-infra"
+		},
+		{
+			"path": "../emprops-nginx-conf"
 		}
 	],
 	"settings": {}

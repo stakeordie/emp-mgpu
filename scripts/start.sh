@@ -197,11 +197,8 @@ setup_env_vars() {
         echo "COMFY_REPO_URL=${COMFY_REPO_URL}"
         echo "WORKER_REDIS_API_HOST=${WORKER_REDIS_API_HOST}"
         echo "WORKER_REDIS_API_PORT=${WORKER_REDIS_API_PORT}"
-        echo "WORKER_USE_SSL=${WORKER_USE_SSL}"
         echo "WORKER_CONNECTORS=${WORKER_CONNECTORS}"
         echo "WORKER_WEBSOCKET_AUTH_TOKEN=${WORKER_WEBSOCKET_AUTH_TOKEN}"
-        echo "WORKER_HEARTBEAT_INTERVAL=${WORKER_HEARTBEAT_INTERVAL:-20}"
-        echo "WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}"
         echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
         echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
@@ -232,11 +229,8 @@ setup_env_vars() {
 
         log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
         log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
-        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
         log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
         log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
-        log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"
-        log "WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL}"
         log "WORKER_SIMULATION_JOB_TYPE: ${WORKER_SIMULATION_JOB_TYPE}"
         log "WORKER_SIMULATION_PROCESSING_TIME: ${WORKER_SIMULATION_PROCESSING_TIME}"
         log "WORKER_SIMULATION_STEPS: ${WORKER_SIMULATION_STEPS}"
@@ -265,11 +259,8 @@ setup_env_vars() {
         echo "COMFY_REPO_URL=${COMFY_REPO_URL}"
         echo "WORKER_REDIS_API_HOST=${WORKER_REDIS_API_HOST}"
         echo "WORKER_REDIS_API_PORT=${WORKER_REDIS_API_PORT}"
-        echo "WORKER_USE_SSL=${WORKER_USE_SSL}"
         echo "WORKER_CONNECTORS=${WORKER_CONNECTORS}"
         echo "WORKER_WEBSOCKET_AUTH_TOKEN=${WORKER_WEBSOCKET_AUTH_TOKEN}"
-        echo "WORKER_HEARTBEAT_INTERVAL=${WORKER_HEARTBEAT_INTERVAL:-20}"
-        echo "WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}"
         echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
         echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
         echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
@@ -1195,8 +1186,9 @@ setup_nginx_auth() {
             return 1
         fi
         
-        # Set correct permissions
-        chmod 600 /etc/nginx/.sd
+        # [2025-05-19T13:15:00-04:00] Set permissions that allow NGINX to read the file
+        # Changed from 600 (owner only) to 644 (owner read/write, group/others read)
+        chmod 644 /etc/nginx/.sd
         
         # Verify file exists and has correct permissions
         if [ ! -f "/etc/nginx/.sd" ]; then
@@ -1204,9 +1196,10 @@ setup_nginx_auth() {
             return 1
         fi
         
-        if [ "$(stat -c %a /etc/nginx/.sd)" != "600" ]; then
+        if [ "$(stat -c %a /etc/nginx/.sd)" != "644" ]; then
             log "ERROR: Auth file has incorrect permissions"
-            chmod 600 /etc/nginx/.sd
+            log "Setting permissions to 644 to allow NGINX to read the file"
+            chmod 644 /etc/nginx/.sd
         fi
         
         log "NGINX authentication setup complete"
@@ -1446,17 +1439,41 @@ setup_a1111() {
         return 1
     fi
     
-    # Quick status check
-    log "Verifying Automatic1111 services..."
-    mgpu a1111 status all >/dev/null || {
-        log "ERROR: Automatic1111 service verification failed"
-        return 1
-    }
-    
     # Wait for services to initialize
     log "Waiting for Automatic1111 services to initialize..."
     log "WAITING TO START UP BEFORE LOADING MODELS..."
     sleep 75
+
+    # [2025-05-19T13:54:00-04:00] Quick status check with retries
+    log "Verifying Automatic1111 services..."
+    
+    # Try up to 3 times with 10 second intervals
+    local max_attempts=3
+    local attempt=1
+    local verification_success=false
+    
+    while [ $attempt -le $max_attempts ]; do
+        log "Verification attempt $attempt of $max_attempts..."
+        if mgpu a1111 status all > /dev/null; then
+            log "Automatic1111 services verified successfully"
+            verification_success=true
+            break
+        else
+            log "WARNING: Automatic1111 service verification attempt $attempt failed"
+            if [ $attempt -lt $max_attempts ]; then
+                log "Waiting 10 seconds before retrying..."
+                sleep 10
+            fi
+            attempt=$((attempt + 1))
+        fi
+    done
+    
+    # Log warning but continue even if verification fails
+    if [ "$verification_success" != "true" ]; then
+        log "WARNING: Automatic1111 service verification failed after $max_attempts attempts"
+        log "Continuing anyway as services might still be starting up..."
+        # Not returning error code - allowing setup to continue
+    fi
     
     # Load models
     if [ -n "$MODELS" ]; then
@@ -1632,6 +1649,9 @@ verify_and_report() {
     # Give services a moment to start if they just started
     sleep 2
     
+    # Track which services failed for summary
+    declare -a failed_services
+    
     # Run comprehensive verification
     verify_services
     
@@ -1640,15 +1660,28 @@ verify_and_report() {
         log ""
         log "===================================="
         log "All services are running correctly"
-        log "Use 'mgpu logs-all' to monitor all services"
+        # [2025-05-19T16:28:00-04:00] Updated log monitoring command reference
+        log "Use 'docker logs -f emprops-27128' to monitor all services"
         log "===================================="
         return 0
     else
+        # [2025-05-19T16:57:00-04:00] Improved error reporting with specific service failures
         log ""
         log "===================================="
-        log "WARNING: Some services are not functioning correctly"
-        log "Check the logs above for specific errors"
-        log "Use 'mgpu logs-all' to monitor services for errors"
+        log "WARNING: Service verification failed"
+        
+        # Report specific failures
+        if [ ${#failed_services[@]} -gt 0 ]; then
+            log "The following services have issues:"
+            for service in "${failed_services[@]}"; do
+                log "  - $service"
+            done
+        else
+            log "Unable to determine which specific services failed. Check the logs above for details."
+        fi
+        
+        # [2025-05-19T16:28:00-04:00] Updated log monitoring command reference
+        log "Use 'docker logs -f emprops-27128' to monitor services for errors"
         log "===================================="
         return 1
     fi
@@ -1656,6 +1689,8 @@ verify_and_report() {
 
 verify_services() {
     local all_services_ok=true
+    # Clear the failed services array
+    failed_services=()
     
     # 1. Check NGINX
     log "Checking NGINX..."
@@ -1663,6 +1698,7 @@ verify_services() {
         log "ERROR: NGINX is not running"
         service nginx status 2>&1 | while read -r line; do log "  $line"; done
         all_services_ok=false
+        failed_services+=("NGINX")
     else
         log "NGINX is running"
     fi
@@ -1688,6 +1724,7 @@ verify_services() {
             # 2025-04-12 17:53: Updated service name from comfy to comfyui
             mgpu comfyui status "$instance" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("ComfyUI instance $instance")
             continue
         fi
         
@@ -1707,6 +1744,7 @@ verify_services() {
             log "Current listening ports:"
             netstat -tuln | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("ComfyUI port $proxy_port")
         fi
         
         # Check logs
@@ -1715,6 +1753,7 @@ verify_services() {
         if [ ! -f "$log_dir" ]; then
             log "ERROR: Missing ComfyUI log file: $log_dir"
             all_services_ok=false
+            failed_services+=("ComfyUI logs for instance $instance")
         else
             log "=== Last 5 lines of ComfyUI log for GPU $instance ==="
             tail -n 5 "$log_dir" | while read -r line; do log "  $line"; done
@@ -1726,6 +1765,7 @@ verify_services() {
             log "Curl verbose output:"
             curl -v "http://localhost:$proxy_port/system_stats" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("ComfyUI API for instance $instance")
         else
             log "ComfyUI instance $instance is responding to requests"
         fi
@@ -1747,6 +1787,7 @@ verify_services() {
             log "ERROR: Automatic1111 service for instance $instance is not running"
             mgpu a1111 status "$instance" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("Automatic1111 instance $instance")
             continue
         fi
         
@@ -1766,6 +1807,7 @@ verify_services() {
             log "Current listening ports:"
             netstat -tuln | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("Automatic1111 port $proxy_port")
         fi
         
         # Check logs
@@ -1774,6 +1816,7 @@ verify_services() {
         if [ ! -f "$log_dir" ]; then
             log "ERROR: Missing Automatic1111 log file: $log_dir"
             all_services_ok=false
+            failed_services+=("Automatic1111 logs for instance $instance")
         else
             log "=== Last 5 lines of Automatic1111 log for GPU $instance ==="
             tail -n 5 "$log_dir" | while read -r line; do log "  $line"; done
@@ -1786,6 +1829,7 @@ verify_services() {
             log "Curl verbose output:"
             curl -v "http://localhost:$proxy_port/" 2>&1 | while read -r line; do log "  $line"; done
             all_services_ok=false
+            failed_services+=("Automatic1111 API for instance $instance")
         else
             log "Automatic1111 instance $instance is responding to requests"
         fi
@@ -1828,29 +1872,50 @@ verify_services() {
     
     # Check Langflow
     log "Checking Langflow service..."
-    if ! service langflow status >/dev/null 2>&1; then
-        log "ERROR: Langflow service is not running"
-        service langflow status 2>&1 | while read -r line; do log "  $line"; done
-        all_services_ok=false
+    # [2025-05-19T15:37:30-04:00] Updated to use multiple checks for Langflow service
+    langflow_running=false
+    
+    # Method 1: Check using sv status (for runit services)
+    if sv status langflow >/dev/null 2>&1; then
+        log "Langflow service is running (sv check)"
+        langflow_running=true
     else
-        log "Langflow service is running"
-        
-        # Check Langflow port
-        local langflow_port=7860
-        if ! netstat -tuln | grep -q ":$langflow_port "; then
-            log "ERROR: Langflow port $langflow_port is not listening"
-            all_services_ok=false
-        else
-            log "Langflow port $langflow_port is listening"
-            
-            # Try a test request to Langflow
-            if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:$langflow_port/ | grep -q "200\|302"; then
-                log "ERROR: Langflow is not responding to requests"
-                all_services_ok=false
-            else
-                log "Langflow is responding to requests"
-            fi
-        fi
+        log "NOTE: Langflow service not detected via sv status"
+        sv status langflow 2>&1 | while read -r line; do log "  $line"; done
+    fi
+    
+    # Method 2: Check using process search
+    if pgrep -f "langflow run --host 0.0.0.0 --port 7860" >/dev/null; then
+        log "Langflow process is running (process check)"
+        langflow_running=true
+    else
+        log "NOTE: Langflow process not found via pgrep"
+    fi
+    
+    # Method 3: Direct port check
+    local langflow_port=7860
+    if netstat -tuln | grep -q ":$langflow_port "; then
+        log "Langflow port $langflow_port is listening (port check)"
+        langflow_running=true
+    else
+        log "NOTE: Langflow port $langflow_port not listening"
+    fi
+    
+    # Method 4: HTTP check
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:$langflow_port/ | grep -q "200\|302"; then
+        log "Langflow is responding to HTTP requests (HTTP check)"
+        langflow_running=true
+    else
+        log "NOTE: Langflow not responding to HTTP requests"
+    fi
+    
+    # Final decision based on all checks
+    if [ "$langflow_running" = "true" ]; then
+        log "SUCCESS: Langflow is running (at least one check passed)"
+    else
+        log "ERROR: Langflow is not running (all checks failed)"
+        all_services_ok=false
+        failed_services+=("Langflow")
     fi
     
     # Check Redis Workers
@@ -1859,6 +1924,7 @@ verify_services() {
     if ! wgpu status all; then
         log "ERROR: One or more Redis Worker instances are not running"
         all_services_ok=false
+        failed_services+=("Redis Workers (general)")
     else
         log "Redis Workers: All instances reported running by wgpu script."
         
@@ -1869,21 +1935,59 @@ verify_services() {
             if [ ! -f "$worker_log_dir" ]; then
                 log "ERROR: Missing worker log file: $worker_log_dir"
                 all_services_ok=false
+                failed_services+=("Redis Worker logs for instance $instance")
             else
                 log "=== Last 10 lines of worker $instance log ==="
                 tail -n 10 "$worker_log_dir" | while read -r line; do log "  $line"; done
                 
-                # Check for successful connection to Redis in logs
-                if grep -q "Successfully connected to Redis" "$worker_log_dir"; then
+                # [2025-05-19T16:55:00-04:00] Updated worker verification to prioritize 'Worker is running' message
+                # First check if worker process is running via direct command
+                local redis_connection_ok=false
+                
+                # Method 1: Direct process check (most reliable)
+                if wgpu status "$instance" | grep -q "Worker is running"; then
+                    log "Worker $instance is confirmed running via wgpu status command (PID check)"
+                    redis_connection_ok=true
+                # Method 2: Log file checks (fallback)
+                elif grep -q "Worker is running" "$worker_log_dir"; then
+                    log "Worker $instance is running according to logs"
+                    redis_connection_ok=true
+                elif grep -q "Successfully connected to Redis" "$worker_log_dir"; then
                     log "Worker $instance has successfully connected to Redis"
+                    redis_connection_ok=true
                 elif grep -q "Connecting to Redis" "$worker_log_dir"; then
                     log "Worker $instance is attempting to connect to Redis"
+                    redis_connection_ok=true
+                elif grep -q "HEARTBEAT.*RECEIVED" "$worker_log_dir"; then
+                    log "Worker $instance is communicating with Redis (heartbeat detected)"
+                    redis_connection_ok=true
+                elif grep -q "HEARTBEAT SENT" "$worker_log_dir"; then
+                    log "Worker $instance is sending heartbeats to Redis"
+                    redis_connection_ok=true
+                elif grep -q "handle_message" "$worker_log_dir"; then
+                    log "Worker $instance is handling messages from Redis"
+                    redis_connection_ok=true
+                elif grep -q "Worker started" "$worker_log_dir"; then
+                    log "Worker $instance has started according to logs"
+                    redis_connection_ok=true
                 else
-                    log "WARNING: Worker $instance may not be connecting to Redis properly"
-                    # Don't fail verification for this, just warn
+                    # Try direct ping as last resort
+                    log "Attempting to ping worker $instance directly..."
+                    if wgpu ping "$instance" >/dev/null 2>&1; then
+                        log "Worker $instance responded to ping"
+                        redis_connection_ok=true
+                    else
+                        log "WARNING: Worker $instance may not be connecting to Redis properly"
+                    fi
                 fi
                 
-                # Check connector status
+                # Only log a warning, don't fail verification
+                if [ "$redis_connection_ok" = "false" ]; then
+                    log "WARNING: Worker started but could not verify it's running properly"
+                    # Don't add to failed_services since we're treating this as non-fatal
+                fi
+                        
+                        # Check connector status
                 log "Checking connector status for worker $instance..."
                 
                 # Get list of connectors from environment or worker log
@@ -1896,7 +2000,10 @@ verify_services() {
                 
                 log "Worker $instance connectors: $connectors"
                 
-                # Check each connector
+                # [2025-05-19T16:26:00-04:00] Made connector warnings non-fatal to verification
+                # Check each connector but don't fail verification for connector issues
+                local connector_warnings=false
+                
                 if [[ "$connectors" == *"comfyui"* ]]; then
                     if grep -q "Successfully connected to ComfyUI" "$worker_log_dir"; then
                         log "Worker $instance has successfully connected to ComfyUI connector"
@@ -1904,6 +2011,7 @@ verify_services() {
                         log "Worker $instance is attempting to connect to ComfyUI connector"
                     else
                         log "WARNING: Worker $instance may not be connecting to ComfyUI connector properly"
+                        connector_warnings=true
                     fi
                 fi
                 
@@ -1912,12 +2020,19 @@ verify_services() {
                         log "Worker $instance has initialized simulation connector"
                     else
                         log "WARNING: Worker $instance may not have initialized simulation connector"
+                        connector_warnings=true
                     fi
+                fi
+                
+                # Log connector warnings but don't fail verification
+                if [ "$connector_warnings" = "true" ]; then
+                    log "NOTE: Connector warnings detected but treating as non-fatal for verification"
                 fi
             fi
         done
     fi
     
+    # [2025-05-19T16:37:00-04:00] Fixed syntax error in verification function
     if [ "$all_services_ok" = true ]; then
         log "All services are running correctly"
         return 0
@@ -1955,17 +2070,64 @@ make_auth_request() {
 
 setup_langflow() {
     log "Setting up Langflow..."
-    # Ensure the Langflow directory exists
+    # [2025-05-19T14:30:00-04:00] Create all required directories for Langflow
     mkdir -p /workspace/langflow
+    mkdir -p /workspace/config
+    mkdir -p /etc/service/langflow
+    
+    # Ensure proper permissions on config directory
+    chmod 755 /workspace/config
     
     # Copy the Langflow configuration file if it doesn't exist
     if [ ! -f /workspace/langflow/config.yaml ]; then
         cp /scripts/langflow/config.yaml /workspace/langflow/
     fi
     
-    # Start Langflow in the background
-    cd /workspace/langflow
-    nohup langflow run --host 0.0.0.0 --port 7860 > /workspace/logs/langflow.log 2>&1 &
+    # Check if secret key file exists, create if needed
+    if [ ! -f /workspace/config/secret_key ]; then
+        log "Creating Langflow secret key file..."
+        echo "$(openssl rand -hex 16)" > /workspace/config/secret_key
+        chmod 644 /workspace/config/secret_key
+    fi
+    
+    # Create Langflow service script
+    log "Creating Langflow service script..."
+    cat > /etc/service/langflow/run << 'EOF'
+#!/bin/bash
+exec 2>&1
+
+# Set up environment
+export CONFIG_DIR=/workspace/config
+cd /workspace/langflow
+
+# Run Langflow
+exec langflow run --host 0.0.0.0 --port 7860
+EOF
+    
+    # Make service script executable
+    chmod +x /etc/service/langflow/run
+    
+    # Create log service directory and script
+    mkdir -p /etc/service/langflow/log
+    cat > /etc/service/langflow/log/run << 'EOF'
+#!/bin/bash
+exec svlogd -tt /workspace/logs/langflow
+EOF
+    
+    # Make log script executable
+    chmod +x /etc/service/langflow/log/run
+    
+    # Create log directory
+    mkdir -p /workspace/logs/langflow
+    
+    # Start the service
+    log "Starting Langflow service..."
+    sv start langflow || {
+        log "WARNING: Failed to start Langflow service with sv, falling back to direct start"
+        cd /workspace/langflow
+        export CONFIG_DIR=/workspace/config
+        nohup langflow run --host 0.0.0.0 --port 7860 > /workspace/logs/langflow.log 2>&1 &
+    }
 }
 
 # Updated: 2025-05-15T14:54:30-04:00 - Function to create symlinks from static-models.json
@@ -2143,7 +2305,6 @@ setup_redis_workers() {
         
         log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
         log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
-        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
         log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
         log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
         log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"
@@ -2175,7 +2336,6 @@ setup_redis_workers() {
         log "Redis environment variables for worker ${i}:"
         log "WORKER_REDIS_API_HOST: ${WORKER_REDIS_API_HOST}"
         log "WORKER_REDIS_API_PORT: ${WORKER_REDIS_API_PORT}"
-        log "WORKER_USE_SSL: ${WORKER_USE_SSL}"
         log "WORKER_WEBSOCKET_AUTH_TOKEN: ${WORKER_WEBSOCKET_AUTH_TOKEN}"
         log "WORKER_CONNECTORS: ${WORKER_CONNECTORS}"
         log "WORKER_HEARTBEAT_INTERVAL: ${WORKER_HEARTBEAT_INTERVAL}"

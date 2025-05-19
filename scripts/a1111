@@ -141,7 +141,28 @@ start() {
     # [2025-05-16T16:42:00-04:00] Removed xformers flag since we're not installing it
     # [2025-05-16T16:43:00-04:00] Added options from reference build.sh: --opt-sdp-no-mem-attention --medvram --no-half-vae
     # [2025-05-16T17:30:00-04:00] Added additional flags to help with PyTorch compatibility issues
-    local CMD="source /opt/conda/bin/activate a1111 && cd /workspace/a1111_gpu${GPU_NUM} && python launch.py -f --port $PORT --api --enable-insecure-extension-access --skip-torch-cuda-test --opt-sdp-no-mem-attention --medvram --no-half-vae --precision full --no-half --skip-version-check"
+    # [2025-05-19T13:38:00-04:00] Add tcmalloc preloading specifically for A1111
+    # This isolates tcmalloc to only the A1111 environment where it's needed
+    # First check if libtcmalloc exists in the system
+    local TCMALLOC_PATH=""
+    if [ -f "/usr/lib/x86_64-linux-gnu/libtcmalloc.so" ]; then
+        TCMALLOC_PATH="/usr/lib/x86_64-linux-gnu/libtcmalloc.so"
+    elif [ -f "/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4" ]; then
+        TCMALLOC_PATH="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
+    elif [ -f "/usr/lib/libtcmalloc.so" ]; then
+        TCMALLOC_PATH="/usr/lib/libtcmalloc.so"
+    fi
+    
+    # Set up the command with or without tcmalloc preloading
+    local PRELOAD_CMD=""
+    if [ -n "$TCMALLOC_PATH" ]; then
+        log "$GPU_NUM" "Using tcmalloc from $TCMALLOC_PATH for A1111"
+        PRELOAD_CMD="LD_PRELOAD=$TCMALLOC_PATH"
+    else
+        log "$GPU_NUM" "Tcmalloc library not found, running without it"
+    fi
+    
+    local CMD="source /opt/conda/bin/activate a1111 && cd /workspace/a1111_gpu${GPU_NUM} && $PRELOAD_CMD python launch.py -f --port $PORT --api --enable-insecure-extension-access --skip-torch-cuda-test --opt-sdp-no-mem-attention --medvram --no-half-vae --precision full --no-half --skip-version-check"
     
     # Add mode-specific args
     log "$GPU_NUM" "A1111: Building command... GPU_NUM=$GPU_NUM MOCK_GPU=${MOCK_GPU:-0}"
