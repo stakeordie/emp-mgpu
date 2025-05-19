@@ -92,3 +92,40 @@ mgpu uses multitail for consolidated logging.
    - "q" to quite
 
 logs accepts multiple gpu_ids. so mgpu `logs 1 3 4` will work.\5
+
+### MODELS FOLDER
+```
+├── animatediff_models
+├── checkpoints
+│   ├── epiCPhotoGasm.safetensors -> /workspace/shared/sd_models/Stable-diffusion/epiCPhotoGasm.safetensors
+│   ├── ltxv-13b-0.9.7-dev-fp8.safetensors
+│   └── ltx-video-2b-v0.9.safetensors
+├── clip
+│   └── t5xxl_fp16.safetensors
+├── clip_vision
+├── configs
+├── controlnet
+├── diffusers
+├── diffusion_models
+├── embeddings
+├── gligen
+├── hypernetworks
+├── ipadapter
+├── loras
+├── photomaker
+├── sams
+├── style_models
+├── text_encoders
+│   └── PixArt-XL-2-1024-MS
+│       └── text_encoder
+│           ├── config.json
+│           ├── model-00001-of-00002.safetensors
+│           ├── model-00002-of-00002.safetensors
+│           └── model.safetensors.index.json
+├── ultralytics
+├── unet
+├── upscale_models
+│   └── ltxv-spatial-upscaler-0.9.7.safetensors
+├── vae
+└── vae_approx
+```

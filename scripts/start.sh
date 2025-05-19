@@ -1156,7 +1156,13 @@ setup_nginx() {
         eval "$(ssh-agent -s)"
         ssh-add /root/.ssh/id_ed25519
         
-        git clone git@github.com:stakeordie/emprops-nginx-conf.git /etc/nginx-repo
+        # [2025-05-19T11:20:00-04:00] Check if directory exists before cloning to avoid errors
+        if [ ! -d "/etc/nginx-repo" ]; then
+            git clone git@github.com:stakeordie/emprops-nginx-conf.git /etc/nginx-repo
+        else
+            echo "NGINX repo directory already exists, updating instead of cloning..."
+            cd /etc/nginx-repo && git pull
+        fi
 EOF
 
     if [ ! -d "/etc/nginx-repo" ]; then

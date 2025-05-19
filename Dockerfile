@@ -249,7 +249,15 @@ RUN cd /workspace && \
 RUN cd /workspace && \
     /scripts/a1111_scripts/a1111_clone.sh generative-models https://github.com/Stability-AI/generative-models 45c443b316737a4ab6e40413d7794a7f5657c19f
 
-# Install tcmalloc to fix memory leaks
+# [2025-05-19T11:25:00-04:00] Fix tcmalloc library loading issue
+# Create a symbolic link to the tcmalloc library if it doesn't exist
+# This is more reliable than trying to install packages which might fail due to apt repository issues
+RUN mkdir -p /usr/local/lib && \
+    if [ ! -f /usr/lib/libtcmalloc.so ] && [ -f /usr/lib/x86_64-linux-gnu/libtcmalloc.so ]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libtcmalloc.so /usr/lib/libtcmalloc.so; \
+    elif [ ! -f /usr/lib/libtcmalloc.so ] && [ -f /usr/lib/x86_64-linux-gnu/libtcmalloc.so.4 ]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libtcmalloc.so.4 /usr/lib/libtcmalloc.so; \
+    fi
 ENV LD_PRELOAD=libtcmalloc.so
 
 # 2025-05-16T17:36:00-04:00: Optimized conda and pip steps for better caching
