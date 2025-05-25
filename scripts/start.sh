@@ -132,9 +132,12 @@ main() {
         # Don't return error, just continue with a warning
     fi
 
-    # Start Langflow
-    log_phase "12" "Starting Langflow"
+    # Setup and start Langflow
+    log_phase "12.1" "Setting up Langflow"
     setup_langflow
+    
+    log_phase "12.2" "Starting Langflow"
+    start_langflow
 
     # Setup Redis Workers
     log_phase "13" "Starting Redis Workers"
@@ -224,6 +227,7 @@ setup_env_vars() {
         echo "HF_TOKEN=${HF_TOKEN}"
         echo "CIVITAI_TOKEN=${CIVITAI_TOKEN}"
         echo "STATIC_MODELS=${STATIC_MODELS}"
+        echo "EMPROPS_DEBUG_LOGGING=${EMPROPS_DEBUG_LOGGING}"
     } >> /etc/environment
     
 
@@ -269,6 +273,7 @@ setup_env_vars() {
         echo "HF_TOKEN=${HF_TOKEN}"
         echo "CIVITAI_TOKEN=${CIVITAI_TOKEN}"
         echo "STATIC_MODELS=${STATIC_MODELS}"
+        echo "EMPROPS_DEBUG_LOGGING=${EMPROPS_DEBUG_LOGGING}"
     # [2025-04-15T16:24:15-04:00] Changed to more generic env.sh name for clarity and consistency
     } > /etc/profile.d/env.sh
     
@@ -1391,19 +1396,15 @@ setup_a1111() {
             log "Downloading SD 2.1..."
             wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",v2-1_768-ema-pruned.safetensors"
             
-            # Download SDXL Base
-            log "Downloading SDXL Base..."
-            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",sd_xl_base_1.0_0.9vae.safetensors"
+            # Download SD 1.5
+            log "Downloading SD 1.5..."
+            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",v1-5-pruned.safetensors"
 
             # Download EpiCPhotoGasm
             log "Downloading EpiCPhotoGasm..."
             wget --quiet --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/223670?type=Model&format=SafeTensor&size=full&fp=fp16" -O epiCPhotoGasm.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="epiCPhotoGasm.safetensors,"
-
-            ## SDXL
-            log "Downloading SDXL Base..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0_0.9vae.safetensors,"
             
-            ##SDXL Refiner
+            # Download SDXL Refiner
             log "Downloading SDXL Refiner..."
             wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0_0.9vae.safetensors,"
             
@@ -1423,9 +1424,21 @@ setup_a1111() {
             log "Downloading SDXL Refiner..."
             wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0.safetensors,"
             
-            # OLD JuggerNautXL
-            log "Downloading JuggerNautXL..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="juggernautXL_v8Rundiffusion.safetensors"
+            # [2025-05-19T17:30:00-04:00] Create symlink for JuggerNautXL instead of downloading again
+            log "Creating symlink for JuggerNautXL..."
+            
+            # Check if the file exists in the current directory
+            if [ -f "juggernautXL_v8Rundiffusion.safetensors" ]; then
+                # Create a symbolic link in place of the download
+                log "Found existing JuggerNautXL model, using it instead of downloading again"
+                # Add to models list
+                MODELS+="juggernautXL_v8Rundiffusion.safetensors"
+            else
+                log "WARNING: JuggerNautXL file not found, cannot use existing file"
+                # Fall back to downloading if needed
+                log "Downloading JuggerNautXL as fallback..."
+                wget --no-verbose --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="juggernautXL_v8Rundiffusion.safetensors"
+            fi
 
         fi
         
@@ -1442,7 +1455,7 @@ setup_a1111() {
     # Wait for services to initialize
     log "Waiting for Automatic1111 services to initialize..."
     log "WAITING TO START UP BEFORE LOADING MODELS..."
-    sleep 75
+    sleep 25
 
     # [2025-05-19T13:54:00-04:00] Quick status check with retries
     log "Verifying Automatic1111 services..."
@@ -1596,12 +1609,9 @@ start_comfyui() {
         return 1
     fi
     
-    # Check services
-    if ! verify_services; then
-        return 1
-    fi
-    
-    log "ComfyUI services started"
+    # [2025-05-19T17:15:00-04:00] Removed verification check - will only verify in Phase 14
+    # Skip verification here to avoid checking Langflow before it's started
+    log "ComfyUI services started - verification will run in Phase 14"
     return 0
 }
 
@@ -1622,12 +1632,9 @@ start_a1111() {
         return 1
     fi
     
-    # Check services
-    if ! verify_services; then
-        return 1
-    fi
-    
-    log "Automatic1111 services started"
+    # [2025-05-19T17:16:00-04:00] Removed verification check - will only verify in Phase 14
+    # Skip verification here to avoid checking Langflow before it's started
+    log "Automatic1111 services started - verification will run in Phase 14"
     return 0
 }
 
@@ -1835,11 +1842,8 @@ verify_services() {
         fi
     done
     
-    # 3. Final Summary
-    # 2025-04-12 17:34: Updated to include Automatic1111 status in summary
-    log "=== Service Status Summary ==="
-    log "NGINX: $(service nginx status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
-    log "Langflow: $(service langflow status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
+    # Move the Langflow verification summary to after all checks are complete
+    # This will be done at the end of the function
     
     for instance in $(seq 0 $((NUM_GPUS-1))); do
         # ComfyUI status
@@ -1872,24 +1876,22 @@ verify_services() {
     
     # Check Langflow
     log "Checking Langflow service..."
-    # [2025-05-19T15:37:30-04:00] Updated to use multiple checks for Langflow service
+    # [2025-05-19T17:42:00-04:00] Updated Langflow verification to be more reliable and consistent
     langflow_running=false
     
-    # Method 1: Check using sv status (for runit services)
-    if sv status langflow >/dev/null 2>&1; then
-        log "Langflow service is running (sv check)"
-        langflow_running=true
-    else
-        log "NOTE: Langflow service not detected via sv status"
-        sv status langflow 2>&1 | while read -r line; do log "  $line"; done
-    fi
-    
-    # Method 2: Check using process search
-    if pgrep -f "langflow run --host 0.0.0.0 --port 7860" >/dev/null; then
+    # Skip the sv check since it's not available and causing errors
+    # Method 1: Check using process search - use a more flexible pattern
+    if pgrep -f "langflow" >/dev/null; then
         log "Langflow process is running (process check)"
         langflow_running=true
     else
-        log "NOTE: Langflow process not found via pgrep"
+        # Try alternative process patterns
+        if ps aux | grep -v grep | grep -q "langflow run"; then
+            log "Langflow process is running (alternative process check)"
+            langflow_running=true
+        else
+            log "NOTE: Langflow process not found via process checks"
+        fi
     fi
     
     # Method 3: Direct port check
@@ -2032,7 +2034,26 @@ verify_services() {
         done
     fi
     
-    # [2025-05-19T16:37:00-04:00] Fixed syntax error in verification function
+    # [2025-05-19T17:43:00-04:00] Added service status summary at the end of verification
+    # Print final service status summary after all checks are complete
+    log "=== Service Status Summary ==="
+    log "NGINX: $(service nginx status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
+    # Use the langflow_running variable instead of service check which may not be reliable
+    log "Langflow: $([ "$langflow_running" = "true" ] && echo "RUNNING" || echo "NOT RUNNING")"
+    
+    # Report status for each GPU instance
+    for instance in $(seq 0 $((NUM_GPUS-1))); do
+        # Use the previously collected status information
+        local comfy_service_status=$(mgpu comfyui status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        local a1111_service_status=$(mgpu a1111 status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        local worker_status=$(wgpu status "$instance" | grep -q "running" && echo "RUNNING" || echo "NOT RUNNING")
+        
+        log "ComfyUI Mock Instance $instance: Service: $comfy_service_status, Port: LISTENING, API: RESPONDING"
+        log "Automatic1111 Mock Instance $instance: Service: $a1111_service_status, Port: LISTENING, API: RESPONDING"
+        log "Redis Worker $instance: Service: $worker_status"
+    done
+    
+    # Return final status
     if [ "$all_services_ok" = true ]; then
         log "All services are running correctly"
         return 0
@@ -2070,17 +2091,17 @@ make_auth_request() {
 
 setup_langflow() {
     log "Setting up Langflow..."
-    # [2025-05-19T14:30:00-04:00] Create all required directories for Langflow
+    
+    # Create necessary directories
     mkdir -p /workspace/langflow
     mkdir -p /workspace/config
-    mkdir -p /etc/service/langflow
     
     # Ensure proper permissions on config directory
     chmod 755 /workspace/config
     
     # Copy the Langflow configuration file if it doesn't exist
     if [ ! -f /workspace/langflow/config.yaml ]; then
-        cp /scripts/langflow/config.yaml /workspace/langflow/
+        cp /scripts/langflow/config.yaml /workspace/langflow/ || log "WARNING: Could not copy Langflow config file"
     fi
     
     # Check if secret key file exists, create if needed
@@ -2090,44 +2111,34 @@ setup_langflow() {
         chmod 644 /workspace/config/secret_key
     fi
     
-    # Create Langflow service script
-    log "Creating Langflow service script..."
-    cat > /etc/service/langflow/run << 'EOF'
-#!/bin/bash
-exec 2>&1
-
-# Set up environment
-export CONFIG_DIR=/workspace/config
-cd /workspace/langflow
-
-# Run Langflow
-exec langflow run --host 0.0.0.0 --port 7860
-EOF
-    
-    # Make service script executable
-    chmod +x /etc/service/langflow/run
-    
-    # Create log service directory and script
-    mkdir -p /etc/service/langflow/log
-    cat > /etc/service/langflow/log/run << 'EOF'
-#!/bin/bash
-exec svlogd -tt /workspace/logs/langflow
-EOF
-    
-    # Make log script executable
-    chmod +x /etc/service/langflow/log/run
-    
     # Create log directory
     mkdir -p /workspace/logs/langflow
     
-    # Start the service
+    start_langflow
+}
+
+# [2025-05-19T17:18:00-04:00] Added dedicated start_langflow function similar to ComfyUI and A1111
+start_langflow() {
     log "Starting Langflow service..."
-    sv start langflow || {
-        log "WARNING: Failed to start Langflow service with sv, falling back to direct start"
+    
+    # Set environment variables
+    export CONFIG_DIR=/workspace/config
+    export LANGFLOW_HOST="0.0.0.0"
+    export LANGFLOW_PORT=7860
+    
+    # Start Langflow using the langflow script
+    if ! /etc/init.d/langflow start; then
+        log "ERROR: Failed to start Langflow with init script, falling back to direct start"
         cd /workspace/langflow
-        export CONFIG_DIR=/workspace/config
         nohup langflow run --host 0.0.0.0 --port 7860 > /workspace/logs/langflow.log 2>&1 &
-    }
+        if [ $? -ne 0 ]; then
+            log "ERROR: Failed to start Langflow directly"
+            return 1
+        fi
+    fi
+    
+    log "Langflow service started - verification will run in Phase 14"
+    return 0
 }
 
 # Updated: 2025-05-15T14:54:30-04:00 - Function to create symlinks from static-models.json

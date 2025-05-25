@@ -159,25 +159,78 @@ start() {
     touch "${WORK_DIR}/restart_enabled"
     log "$GPU_NUM" "Created restart flag file at ${WORK_DIR}/restart_enabled"
     
-    # Wait for service to start (up to 30 seconds)
-    log "$GPU_NUM" "Waiting for worker to start (PID: $(cat "${WORK_DIR}/worker.pid"))"
-    for i in {1..30}; do
-        if [ -f "${WORK_DIR}/worker.pid" ] && kill -0 "$(cat "${WORK_DIR}/worker.pid")" 2>/dev/null; then
-            # Check if the process is actually running by looking for it in the process list
-            if ps -p "$(cat "${WORK_DIR}/worker.pid")" | grep -q python; then
-                log "$GPU_NUM" "Worker started successfully after ${i} seconds"
+    # [2025-05-22T19:46:00-04:00] Improved worker startup verification
+    local WORKER_PID=$(cat "${WORK_DIR}/worker.pid")
+    log "$GPU_NUM" "Waiting for worker to start (PID: $WORKER_PID)"
+    
+    # Define connection indicators to look for in logs
+    local CONNECTION_INDICATORS=(
+        "Successfully connected to Redis"
+        "Successfully connected to WebSocket"
+        "connection_established"
+        "Welcome Worker"
+        "HEARTBEAT SENT"
+        "HEARTBEAT.*RECEIVED"
+        "handle_message"
+        "Worker is running"
+        "Connecting to WebSocket"
+    )
+    
+    for i in {1..45}; do  # Increased timeout to 45 seconds
+        # First check: Is the PID file present and is the process running?
+        if [ -f "${WORK_DIR}/worker.pid" ] && kill -0 "$WORKER_PID" 2>/dev/null; then
+            # Process is running, now check for WebSocket connection indicators in logs
+            local connection_found=false
+            
+            for indicator in "${CONNECTION_INDICATORS[@]}"; do
+                if grep -q "$indicator" "${WORK_DIR}/logs/output.log" 2>/dev/null; then
+                    log "$GPU_NUM" "Found connection indicator: '$indicator' in logs"
+                    connection_found=true
+                    break
+                fi
+            done
+            
+            if $connection_found; then
+                # Found evidence of successful connection
+                log "$GPU_NUM" "Worker started successfully after ${i} seconds (WebSocket connection confirmed)"
+                return 0
+            elif [ $i -ge 30 ]; then
+                # After 30 seconds, if process is still running but no connection indicators,
+                # consider it started but with a warning
+                log "$GPU_NUM" "Worker process is running but no WebSocket connection detected in logs"
+                log "$GPU_NUM" "This may be normal if the worker is still initializing"
+                # Return success anyway since the process is running
                 return 0
             fi
-        else
+        elif [ ! -f "${WORK_DIR}/worker.pid" ]; then
+            log "$GPU_NUM" "ERROR: Worker PID file disappeared during startup"
+            return 1
+        elif ! kill -0 "$WORKER_PID" 2>/dev/null; then
             log "$GPU_NUM" "ERROR: Worker process died during startup"
+            # Check if we can see any clues in the log
+            if [ -f "${WORK_DIR}/logs/output.log" ]; then
+                log "$GPU_NUM" "Last 10 lines of worker log:"
+                tail -n 10 "${WORK_DIR}/logs/output.log" | while read -r line; do
+                    log "$GPU_NUM" "LOG: $line"
+                done
+            fi
             return 1
         fi
+        
         sleep 1
     done
     
     # If we get here, the service didn't start properly within the timeout
-    log "$GPU_NUM" "WARNING: Worker started but could not verify it's running properly"
-    return 0
+    # But if the process is still running, we'll consider it a warning rather than an error
+    if [ -f "${WORK_DIR}/worker.pid" ] && kill -0 "$WORKER_PID" 2>/dev/null; then
+        log "$GPU_NUM" "WARNING: Worker process is running but could not verify WebSocket connection"
+        log "$GPU_NUM" "The worker may still be initializing or connecting to the Redis hub"
+        # Return success since the process is still running
+        return 0
+    else
+        log "$GPU_NUM" "ERROR: Worker process died during startup"
+        return 1
+    fi
 }
 
 stop() {

@@ -229,50 +229,91 @@ stop() {
     local GPU_NUM=$1
     local WORK_DIR="${ROOT}/a1111_gpu${GPU_NUM}"
     local PID_FILE="${WORK_DIR}/a1111.pid"
+    # [2025-05-22T19:45:00-04:00] Calculate port based on GPU number
+    local BASE_PORT="${WORKER_BASE_A1111_PORT:-3001}"
+    local PORT=$((BASE_PORT + GPU_NUM))
     
-    if [ ! -f "$PID_FILE" ]; then
-        log "$GPU_NUM" "No PID file found, service may not be running"
-        return 0
-    fi
+    log "$GPU_NUM" "Stopping A1111 service for GPU $GPU_NUM (port $PORT)..."
     
-    local PID
-    PID=$(cat "$PID_FILE")
-    
-    if ! kill -0 "$PID" 2>/dev/null; then
-        log "$GPU_NUM" "Process $PID is not running"
+    # First try to stop using PID file if it exists
+    if [ -f "$PID_FILE" ]; then
+        local PID
+        PID=$(cat "$PID_FILE")
+        
+        if kill -0 "$PID" 2>/dev/null; then
+            log "$GPU_NUM" "Stopping service (PID: $PID)..."
+            
+            # First try graceful shutdown
+            kill -15 "$PID"
+            
+            # Wait for process to terminate
+            local TIMEOUT=30
+            local COUNT=0
+            while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt "$TIMEOUT" ]; do
+                sleep 1
+                COUNT=$((COUNT + 1))
+            done
+            
+            # If still running, force kill
+            if kill -0 "$PID" 2>/dev/null; then
+                log "$GPU_NUM" "Process did not terminate gracefully, forcing kill..."
+                kill -9 "$PID"
+                sleep 1
+            fi
+            
+            # Check if process is still running
+            if kill -0 "$PID" 2>/dev/null; then
+                log "$GPU_NUM" "ERROR: Failed to kill process $PID"
+            else
+                log "$GPU_NUM" "Process $PID terminated"
+            fi
+        else
+            log "$GPU_NUM" "Process $PID is not running"
+        fi
+        
+        # Remove PID file regardless of process state
         rm -f "$PID_FILE"
-        return 0
-    fi
-    
-    log "$GPU_NUM" "Stopping service (PID: $PID)..."
-    
-    # First try graceful shutdown
-    kill -15 "$PID"
-    
-    # Wait for process to terminate
-    local TIMEOUT=30
-    local COUNT=0
-    while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt "$TIMEOUT" ]; do
-        sleep 1
-        COUNT=$((COUNT + 1))
-    done
-    
-    # If still running, force kill
-    if kill -0 "$PID" 2>/dev/null; then
-        log "$GPU_NUM" "Process did not terminate gracefully, forcing kill..."
-        kill -9 "$PID"
-        sleep 1
-    fi
-    
-    # Check if process is still running
-    if kill -0 "$PID" 2>/dev/null; then
-        log "$GPU_NUM" "ERROR: Failed to kill process $PID"
-        return 1
     else
-        log "$GPU_NUM" "Process $PID terminated"
-        rm -f "$PID_FILE"
-        return 0
+        log "$GPU_NUM" "No PID file found, checking for processes using port $PORT"
     fi
+    
+    # [2025-05-22T19:45:00-04:00] Check for any processes using the port
+    # This is a critical addition to ensure the port is released
+    local PORT_PID
+    PORT_PID=$(lsof -i:"$PORT" -t 2>/dev/null)
+    
+    if [ -n "$PORT_PID" ]; then
+        log "$GPU_NUM" "Found process(es) using port $PORT: $PORT_PID"
+        
+        # Kill each process using the port
+        for pid in $PORT_PID; do
+            log "$GPU_NUM" "Killing process $pid that is using port $PORT"
+            kill -15 "$pid" 2>/dev/null
+            sleep 1
+            
+            # Force kill if still running
+            if kill -0 "$pid" 2>/dev/null; then
+                log "$GPU_NUM" "Process $pid did not terminate gracefully, forcing kill..."
+                kill -9 "$pid" 2>/dev/null
+                sleep 1
+            fi
+        done
+        
+        # Verify port is free
+        if lsof -i:"$PORT" -t >/dev/null 2>&1; then
+            log "$GPU_NUM" "ERROR: Port $PORT is still in use after kill attempts"
+            return 1
+        else
+            log "$GPU_NUM" "Successfully freed port $PORT"
+        fi
+    else
+        log "$GPU_NUM" "No processes found using port $PORT"
+    fi
+    
+    # [2025-05-22T19:45:00-04:00] Add a small delay to ensure socket is fully closed
+    sleep 2
+    
+    return 0
 }
 
 restart() {

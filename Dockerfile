@@ -221,8 +221,7 @@ RUN mkdir -p /tmp/a1111_template && mkdir -p /repositories
 
 # Clone A1111 main repository
 RUN cd /tmp/a1111_template && \
-    git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git . && \
-    git reset --hard cf2772fab0af5573da775e7437e6acdca424f26e
+    git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git .
 
 # Clone each repository separately for better caching
 # Clone stable-diffusion-stability-ai

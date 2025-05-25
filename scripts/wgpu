@@ -90,10 +90,11 @@ validate_gpu_id() {
 }
 
 # Function to show logs
+# [2025-05-23T08:20:37-04:00] Updated to make follow parameter default to 1
 show_logs() {
     local gpu_id=$1
     local lines=${2:-100}
-    local follow=${3:-0}
+    local follow=${3:-1}  # Default to follow mode (1)
     
     validate_gpu_id "$gpu_id" || return 1
     
@@ -104,7 +105,11 @@ show_logs() {
         return 1
     fi
     
-    log "Showing logs for worker on GPU $gpu_id (${log_file})"
+    if [ "$follow" -eq 1 ]; then
+        log "Tailing logs for worker on GPU $gpu_id (${log_file}) with -f"
+    else
+        log "Showing logs for worker on GPU $gpu_id (${log_file})"
+    fi
     
     if [ "$follow" -eq 1 ]; then
         tail -n "$lines" -f "$log_file"
@@ -114,13 +119,19 @@ show_logs() {
 }
 
 # Function to show all logs
+# [2025-05-23T08:20:37-04:00] Updated follow parameter default
 show_all_logs() {
     local lines=${1:-20}
-    local follow=${2:-0}
+    local follow=${2:-1}  # Default to follow mode (1)
     
     if [ "$NUM_GPUS" -eq 0 ]; then
         log "No GPUs configured. Check NUM_GPUS environment variable."
         return 1
+    fi
+    
+    if [ "$follow" -eq 1 ]; then
+        log "Cannot follow logs for multiple GPUs simultaneously. Please specify a single GPU."
+        follow=0  # Force follow to be off for all GPUs
     fi
     
     log "Showing last $lines lines of logs for all workers"
@@ -586,7 +597,8 @@ case "$1" in
         ;;
     logs)
         # Parse flags for logs command
-        local FOLLOW=0
+        # [2025-05-23T08:20:37-04:00] Fixed to ensure follow mode works by default
+        local FOLLOW="1"  # Default to follow mode (tail -f) - use string to avoid any potential issues
         local ARGS=() # Store non-flag arguments
         
         # Skip the first argument (which is "logs")
@@ -595,8 +607,13 @@ case "$1" in
         # Process remaining arguments
         while [ $# -gt 0 ]; do
             case "$1" in
+                --no-follow)
+                    FOLLOW="0"
+                    shift
+                    ;;
                 -f|--follow)
-                    FOLLOW=1
+                    # Keep for backward compatibility
+                    FOLLOW="1"
                     shift
                     ;;
                 *)
@@ -611,8 +628,10 @@ case "$1" in
             show_usage
             exit 1
         elif [ "${ARGS[0]}" = "all" ]; then
+            log "Using follow mode: $FOLLOW"
             show_all_logs "${ARGS[1]:-20}" "$FOLLOW"
         else
+            log "Using follow mode: $FOLLOW"
             show_logs "${ARGS[0]}" "${ARGS[1]:-100}" "$FOLLOW"
         fi
         ;;
