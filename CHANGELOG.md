@@ -5,6 +5,7 @@ All notable changes to the EMP MGPU project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- [2025-05-25T22:00:00-04:00] Added log rotation functionality to the wgpu script. Users can now rotate logs for specific GPUs or all GPUs with `./scripts/wgpu rotate [gpu_id|all]`. This creates a backup of the current log file and starts a fresh log, improving log management and debugging capabilities.
 - [2025-05-07T12:39:06-04:00] Modified start.sh to install requirements.txt for custom nodes in manage_custom_nodes. This ensures Python dependencies like azure-storage-blob for EmProps_Cloud_Storage_Saver are installed, fixing 'Unsupported provider: azure' errors.
 - [2025-04-17 13:33] Fixed Automatic1111 JSON decoding error by initializing configuration files with valid JSON structure. Updated a1111_config.py to handle empty files gracefully and added configuration initialization to the setup_a1111 function. This prevents webui.sh from failing when trying to load empty configuration files.
 - [2025-04-17 13:18] Changed A1111 launch command to use absolute path (/workspace/a1111_gpu${GPU_NUM}/webui.sh) instead of relative path (./webui.sh). This improves reliability by eliminating potential path-related issues and makes the launch process more robust across different environments.

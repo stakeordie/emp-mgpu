@@ -118,6 +118,61 @@ show_logs() {
     fi
 }
 
+# Function to rotate logs for a specific GPU
+# [2025-05-25T22:00:00-04:00] Added log rotation functionality
+rotate_logs() {
+    local gpu_id=$1
+    
+    validate_gpu_id "$gpu_id" || return 1
+    
+    local log_file="${ROOT}/worker_gpu${gpu_id}/logs/output.log"
+    local backup_file="${ROOT}/worker_gpu${gpu_id}/logs/output.log.bak"
+    
+    if [ ! -f "$log_file" ]; then
+        log "No log file found for GPU $gpu_id at $log_file"
+        return 1
+    fi
+    
+    # Backup the current log file
+    if [ -f "$backup_file" ]; then
+        log "Removing old backup log file for GPU $gpu_id"
+        rm -f "$backup_file"
+    fi
+    
+    log "Rotating logs for worker on GPU $gpu_id"
+    mv "$log_file" "$backup_file"
+    
+    # Create a new empty log file with proper permissions
+    touch "$log_file"
+    chmod 644 "$log_file"
+    
+    log "Log rotation complete for GPU $gpu_id"
+    log "Old logs saved to: $backup_file"
+    log "New log file created: $log_file"
+    
+    return 0
+}
+
+# Function to rotate logs for all GPUs
+# [2025-05-25T22:00:00-04:00] Added log rotation functionality for all GPUs
+rotate_all_logs() {
+    log "Rotating logs for all workers"
+    
+    local success=true
+    
+    for ((i=0; i<NUM_GPUS; i++)); do
+        rotate_logs "$i" || success=false
+    done
+    
+    if [ "$success" = true ]; then
+        log "Successfully rotated logs for all workers"
+    else
+        log "Errors occurred while rotating logs for some workers"
+    fi
+    
+    return 0
+}
+
 # Function to show all logs
 # [2025-05-23T08:20:37-04:00] Updated follow parameter default
 show_all_logs() {
@@ -389,23 +444,31 @@ show_usage() {
     echo "  stop [GPU_ID|all]     Stop Redis worker(s)"
     echo "  restart [GPU_ID|all]  Restart Redis worker(s)"
     echo "  status [GPU_ID|all]   Check status of Redis worker(s)"
-    echo "  logs [GPU_ID|all] [LINES] [FOLLOW]  Show logs for Redis worker(s)"
+    echo "  logs <gpu_id|all> [lines] [--no-follow]  Show logs for worker(s)"
+    echo "                                     gpu_id: GPU ID (0, 1, etc.)"
+    echo "                                     all: Show logs for all GPUs"
+    echo "                                     lines: Number of lines to show (default: 100 for single GPU, 20 for all)"
+    echo "                                     --no-follow: Don't follow logs (default is to follow with -f)"
     echo "  setup [GPU_ID|all]    Setup Redis worker directories"
     echo "  update                Update worker to latest version"
     echo "  count                 Show number of GPUs configured"
+    echo "  rotate <gpu_id|all>                 Rotate logs for worker(s)"
+    echo "                                     gpu_id: GPU ID (0, 1, etc.)"
+    echo "                                     all: Rotate logs for all GPUs"
     echo ""
     echo "Arguments:"
     echo "  GPU_ID    GPU ID number (0, 1, 2, ...)"
     echo "  all       Apply command to all GPUs"
-    echo "  LINES     Number of log lines to show (default: 100 for single GPU, 20 for all)"
-    echo "  FOLLOW    1 to follow logs, 0 to not follow (default: 0)"
     echo ""
     echo "Examples:"
     echo "  $0 start 0       Start Redis worker on GPU 0"
-    echo "  $0 start all     Start Redis workers on all GPUs"
-    echo "  $0 logs 1 50 1   Show and follow last 50 lines of logs for GPU 1"
+    echo "  $0 status all    Check status of all Redis workers"
+    echo "  $0 logs 1 50     Show last 50 lines of logs for GPU 1"
+    echo "  $0 logs 1 --no-follow  Show logs for GPU 1 without following"
     echo "  $0 setup all     Setup directories for all GPUs"
     echo "  $0 update        Update worker to latest version"
+    echo "  $0 rotate 0      Rotate logs for GPU 0 (backs up current log and creates new one)"
+    echo "  $0 rotate all    Rotate logs for all GPUs"
 }
 
 # Function to show GPU count
@@ -660,6 +723,17 @@ case "$1" in
             done
         else
             check_websocket "$2"
+        fi
+        ;;
+    rotate)
+        # [2025-05-25T22:00:00-04:00] Added log rotation command
+        if [ -z "$2" ]; then
+            show_usage
+            exit 1
+        elif [ "$2" = "all" ]; then
+            rotate_all_logs
+        else
+            rotate_logs "$2"
         fi
         ;;
     update)
