@@ -1303,10 +1303,6 @@ Flash Attention Commands:
     check_flash_attention        Check the status of Flash Attention installation
     restart_with_flash_attention Restart ComfyUI with Flash Attention enabled
 
-Storage Commands:
-    disk_usage                  Show disk usage information
-    model_cache                 Show model cache information and least recently used models
-
 Arguments:
     gpu_id                 GPU ID (0-N) or 'all' for all GPUs
     
@@ -1322,63 +1318,6 @@ Examples:
     $0 a1111 logs all      Follow Automatic1111 logs for all GPUs
     # 2025-04-12 17:52: Updated service name from comfy to comfyui
     $0 comfyui logs 0 -n    Show recent ComfyUI logs for GPU 0 and exit
-EOF
-}
-
-# Function to show disk usage information
-show_disk_usage() {
-    log "Checking disk usage..."
-    
-    # Get disk usage for the workspace
-    log "Disk usage for workspace:"
-    df -h /workspace 2>/dev/null || df -h .
-    
-    # Model cache database location
-    local model_db="/workspace/shared/custom_nodes/emprops_comfy_nodes/db/model_cache.db"
-    
-    if [ -f "$model_db" ]; then
-        log "\nModel cache database found at: $model_db"
-        log "Model cache size: $(du -sh "$model_db" | cut -f1)"
-    else
-        log "\nError: Model cache database not found at $model_db"
-    fi
-}
-
-# Function to show model cache information
-show_model_cache() {
-    # Model cache database location
-    local model_db="/workspace/shared/custom_nodes/emprops_comfy_nodes/db/model_cache.db"
-    
-    if [ ! -f "$model_db" ]; then
-        log "Error: Model cache database not found at $model_db"
-        return 1
-    fi
-    
-    log "Found model cache database at: $model_db"
-    
-    log "Model cache information:"
-    
-    # Get total number of models
-    local total_models=$(sqlite3 "$model_db" "SELECT COUNT(*) FROM models;" 2>/dev/null || echo "0")
-    log "Total models: $total_models"
-    
-    # Get total size of all models
-    local total_size=$(sqlite3 "$model_db" "SELECT SUM(size_bytes) FROM models;" 2>/dev/null || echo "0")
-    local total_size_gb=$(awk "BEGIN {printf \"%.2f\", $total_size/1024/1024/1024}")
-    log "Total cache size: $total_size_gb GB"
-    
-    # Get 5 least recently used models
-    log -e "\nLeast recently used models (excluding protected/ignored):"
-    sqlite3 -header -column "$model_db" 2>/dev/null <<EOF
-SELECT 
-    filename, 
-    datetime(last_used, 'unixepoch', 'localtime') as last_used,
-    ROUND(size_bytes/1024.0/1024.0, 2) as size_mb,
-    use_count
-FROM models 
-WHERE is_ignore = 0 AND protected = 0
-ORDER BY last_used ASC 
-LIMIT 5;
 EOF
 }
 
@@ -1404,15 +1343,6 @@ if [ -z "$1" ]; then
 fi
 
 case "$1" in
-    # Storage management commands
-    disk_usage)
-        show_disk_usage
-        exit $?
-        ;;
-    model_cache)
-        show_model_cache
-        exit $?
-        ;;
     # [2025-05-28T14:01:43-04:00] Added download_a1111_models command
     download_a1111_models)
         # Call the download function directly and return its output

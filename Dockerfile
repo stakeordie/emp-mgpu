@@ -1,29 +1,52 @@
-# Updated: 2025-05-14T18:41:11-04:00 - Added CUDA version selection via build arg
+# Updated: 2025-05-28T21:50:28-04:00 - Changed to use Azure mirror for more reliable builds
 # Builder stage for SSH key
 ARG BASE_IMAGE=pytorch/pytorch:latest
 
 # Select base image based on CUDA version
 FROM ${BASE_IMAGE} AS start
 
-# Updated: 2025-04-24T15:56:14-04:00 - Added Google Cloud SDK and Azure CLI installation
-RUN apt update && apt-get install -y \
-    git git-lfs rsync nginx wget curl jq tar nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6\
+# Layer cache bust
+ARG START_BUST=0
+RUN echo "Cache bust:$START_BUST" > /dev/null
+
+# Replace default Ubuntu repositories with Azure mirror
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://azure.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu/|http://azure.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list
+
+# Configure apt to be more resilient with retries, timeouts, and connection settings
+RUN echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries && \
+    echo 'APT::Acquire::Retries "10";' >> /etc/apt/apt.conf.d/80-retries && \
+    echo 'Acquire::http::Timeout "120";' > /etc/apt/apt.conf.d/80-timeouts && \
+    echo 'Acquire::https::Timeout "120";' >> /etc/apt/apt.conf.d/80-timeouts && \
+    echo 'Acquire::ftp::Timeout "120";' >> /etc/apt/apt.conf.d/80-timeouts && \
+    echo 'Acquire::http::ConnectionAttemptDelayMsec "250";' > /etc/apt/apt.conf.d/80-connect && \
+    echo 'Acquire::http::MaxConnectionsPerHost "5";' >> /etc/apt/apt.conf.d/80-connect
+
+# Updated: 2025-05-28T21:50:28-04:00 - Enhanced apt commands for better reliability
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git git-lfs rsync nginx wget curl jq tar nano net-tools lsof nvtop multitail ffmpeg libsm6 libxext6 \
     cron sudo ssh zstd build-essential libgoogle-perftools-dev cmake ninja-build \
     gcc g++ openssh-client libx11-dev libxrandr-dev libxinerama-dev \
     libxcursor-dev libxi-dev libgl1-mesa-dev libglfw3-dev software-properties-common \
-    apt-transport-https ca-certificates gnupg lsb-release \
-    && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
-    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
-    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - \
-    && apt-get update && apt-get install -y google-cloud-cli \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    apt-transport-https ca-certificates gnupg lsb-release && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends google-cloud-cli && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && add-apt-repository ppa:ubuntu-toolchain-r/test -y \
-    && apt install -y gcc-11 g++-11 libstdc++6 \
-    && apt-get install -y locales \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Updated: 2025-05-28T21:50:28-04:00 - Enhanced apt commands for better reliability
+RUN apt-get update && \
+    add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-11 g++-11 libstdc++6 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y locales && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 
 # Install newer libstdc++ for both system and conda
@@ -38,6 +61,10 @@ RUN cd /tmp && \
     ln -sf libstdc++.so.6.0.30 libstdc++.so.6
 
 FROM start AS middle
+
+# Layer cache bust
+ARG MIDDLE_BUST=0
+RUN echo "Cache bust:$MIDDLE_BUST" > /dev/null
 
 ENV ROOT=/workspace
 ENV PATH="${ROOT}/.local/bin:${PATH}"
@@ -79,9 +106,19 @@ fi
 
 FROM middle AS shared
 
+# Layer cache bust
+ARG SHARED_BUST=0
+RUN echo "Cache bust:$SHARED_BUST" > /dev/null
+
 RUN cd ${ROOT} && rm -rf ${COMFY_DIR}
 
 FROM shared AS langflow
+
+# Add this in your final stage
+ARG LANGFLOW_BUST=0
+
+# Then use it in a way that doesn't affect the build if it changes
+RUN echo "Cache bust: $LANGFLOW_BUST" > /dev/null
 
 # Install uv through pip
 RUN pip install uv
@@ -98,7 +135,11 @@ COPY config/shared ${ROOT}/shared_custom_nodes
 
 RUN find ${ROOT}/shared_custom_nodes -name "requirements.txt" -execdir pip install -r {} \;
 
-FROM langflow AS a1111
+FROM langflow AS a1111a
+
+# Layer cache bust
+ARG A1111_A_BUST=0
+RUN echo "Cache bust:$A1111_A_BUST" > /dev/null
 
 ARG COMFY_REPO_URL=https://github.com/stakeordie/ComfyUI.git
 ENV COMFY_REPO_URL=${COMFY_REPO_URL}
@@ -113,9 +154,8 @@ RUN chmod +x /etc/init.d/comfyui /etc/init.d/a1111 && \
     update-rc.d a1111 defaults
 
 # 2025-04-12 18:37: Added a1111 script to /usr/local/bin
-COPY ./scripts/mgpu /usr/local/bin/mgpu
 COPY ./scripts/a1111 /usr/local/bin/a1111
-RUN chmod +x /usr/local/bin/mgpu /usr/local/bin/a1111
+RUN chmod +x /usr/local/bin/a1111
 
 # >>> ADDED FOR EMP-REDIS-WORKER
 COPY scripts/worker /etc/init.d/worker
@@ -144,9 +184,7 @@ RUN chmod +x /usr/local/lib/mcomfy/update_nodes.sh
 COPY ./scripts/update_models.sh /usr/local/lib/mcomfy/update_models.sh
 RUN chmod +x /usr/local/lib/mcomfy/update_models.sh
 
-# Copy startup script
-COPY scripts/start.sh /scripts/start.sh
-RUN chmod +x /scripts/start.sh
+
 
 # [2025-05-16T18:10:00-04:00] Updated credential handling to be more secure
 # Create empty credential files that will be populated at runtime
@@ -156,44 +194,11 @@ RUN mkdir -p /credentials && \
 
 # Credentials will be mounted or populated from environment variables at runtime
 
-# Add build argument for fresh clone
-ARG FORCE_FRESH_CLONE=false
+FROM a1111a AS a1111b
 
-# 2025-05-16T17:38:00-04:00: Optimized emprops_shared cloning for better caching
-# Create shared directory first (this rarely changes)
-RUN mkdir -p ${ROOT}/shared
-
-# Conditionally clone based on FORCE_FRESH_CLONE
-# Only use cache buster when FORCE_FRESH_CLONE is true
-RUN if [ "${FORCE_FRESH_CLONE}" = "true" ]; then \
-        # Use build date as cache buster instead of external URL
-        echo "Forcing fresh clone at $(date)" && \
-        rm -rf "${ROOT}/shared/*" && \
-        git clone https://github.com/stakeordie/emprops_shared.git ${ROOT}/shared; \
-    else \
-        echo "Using cached clone if available..." && \
-        git clone https://github.com/stakeordie/emprops_shared.git ${ROOT}/shared || true; \
-    fi
-
-
-# RUN usermod -aG crontab ubuntu
-# Create cron pid directory with correct permissions
-RUN mkdir -p /var/run/cron \
-    && touch /var/run/cron/crond.pid \
-    && chmod 644 /var/run/cron/crond.pid
-RUN sed -i 's/touch $PIDFILE/# touch $PIDFILE/g' /etc/init.d/cron
-
-RUN cd ${ROOT} && git-lfs install 
-
-# Copy cleanup script and setup cron
-COPY scripts/cleanup_outputs.sh /usr/local/bin/cleanup_outputs.sh
-RUN chmod +x /usr/local/bin/cleanup_outputs.sh && \
-    echo "*/15 * * * * /usr/local/bin/cleanup_outputs.sh >> /var/log/cleanup.log 2>&1" > /etc/cron.d/cleanup && \
-    chmod 0644 /etc/cron.d/cleanup && \
-    mkdir -p /var/run/cron && \
-    touch /var/run/cron/crond.pid && \
-    chmod 644 /var/run/cron/crond.pid && \
-    sed -i 's/touch $PIDFILE/# touch $PIDFILE/g' /etc/init.d/cron
+# Layer cache bust
+ARG A1111_B_BUST=0
+RUN echo "Cache bust: $A1111_B_BUST" > /dev/null    
     
 # Added: 2025-04-14T18:41:00-04:00 - Automatic1111 setup
 # Setup Automatic1111 template directory
@@ -278,6 +283,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     git+https://github.com/openai/CLIP.git@d50d76daa670286dd6cacf3bcd80b5e4823fc8e1 \
     git+https://github.com/mlfoundations/open_clip.git@v2.20.0
 
+FROM a1111b AS a1111c
+
+# Layer cache bust
+ARG A1111_C_BUST=0
+RUN echo "Cache bust: $A1111_C_BUST" > /dev/null
+
 # 2025-05-16T16:46:30-04:00: Added Gradio fix from reference Dockerfile
 # 2025-05-16T16:59:00-04:00: Fixed source command for Docker compatibility
 RUN sed -i 's/in_app_dir = .*/in_app_dir = True/g' /opt/conda/envs/a1111/lib/python3.10/site-packages/gradio/routes.py && \
@@ -335,13 +346,44 @@ RUN mkdir -p /tmp/a1111_template/models/Stable-diffusion \
     /output/saved
 
 
-FROM a1111 AS end
 
-RUN if [ "$BASE_IMAGE" = "pytorch/pytorch:latest" ]; then \
-    echo "LOLLYPOP"; \
-else \
-    echo "ICECREAM"; \
-fi
+
+# Start the final stage
+FROM a1111c AS end
+
+# Layer cache bust
+ARG END_BUST=0
+RUN echo "Cache bust: $END_BUST" > /dev/null
+
+RUN rm -rf "${ROOT}/shared" 2>/dev/null || true && \   
+    git clone https://github.com/stakeordie/emprops_shared.git ${ROOT}/shared
+
+# Copy scripts and set up directories
+COPY ./scripts/mgpu /usr/local/bin/mgpu
+RUN chmod +x /usr/local/bin/mgpu
+
+COPY scripts/start.sh /scripts/start.sh
+RUN chmod +x /scripts/start.sh
+
+# RUN usermod -aG crontab ubuntu
+# Create cron pid directory with correct permissions
+RUN mkdir -p /var/run/cron \
+    && touch /var/run/cron/crond.pid \
+    && chmod 644 /var/run/cron/crond.pid
+RUN sed -i 's/touch $PIDFILE/# touch $PIDFILE/g' /etc/init.d/cron
+
+RUN cd ${ROOT} && git-lfs install 
+
+# Copy cleanup script and setup cron
+COPY scripts/cleanup_outputs.sh /usr/local/bin/cleanup_outputs.sh
+RUN chmod +x /usr/local/bin/cleanup_outputs.sh && \
+    echo "*/15 * * * * /usr/local/bin/cleanup_outputs.sh >> /var/log/cleanup.log 2>&1" > /etc/cron.d/cleanup && \
+    chmod 0644 /etc/cron.d/cleanup && \
+    mkdir -p /var/run/cron && \
+    touch /var/run/cron/crond.pid && \
+    chmod 644 /var/run/cron/crond.pid && \
+    sed -i 's/touch $PIDFILE/# touch $PIDFILE/g' /etc/init.d/cron
+
 
 # Start services and application
 CMD ["/scripts/start.sh"]

@@ -8,8 +8,15 @@ x-base-service: &base-service
       - linux/amd64
     args:
       # Updated: 2025-05-14T18:42:32-04:00 - Added CUDA version selection
-      CUDA_VERSION: ${CUDA_VERSION:-12.8}
-      FORCE_FRESH_CLONE: ${FORCE_FRESH_CLONE:-false}
+      CUDA_VERSION: 0
+      START_BUST: 0
+      MIDDLE_BUST: 0
+      SHARED_BUST: 0
+      LANGFLOW_BUST: 0
+      A1111_A_BUST: 0
+      A1111_B_BUST: 0
+      A1111_C_BUST: 0
+      END_BUST: 0
   ports:
     - "2001:2001"
     - "2002:2002"

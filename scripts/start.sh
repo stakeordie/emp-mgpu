@@ -202,11 +202,11 @@ setup_env_vars() {
         echo "WORKER_REDIS_API_PORT=${WORKER_REDIS_API_PORT}"
         echo "WORKER_CONNECTORS=${WORKER_CONNECTORS}"
         echo "WORKER_WEBSOCKET_AUTH_TOKEN=${WORKER_WEBSOCKET_AUTH_TOKEN}"
-        echo "WORKER_SIMULATION_JOB_TYPE=${WORKER_SIMULATION_JOB_TYPE:-simulation}"
-        echo "WORKER_SIMULATION_PROCESSING_TIME=${WORKER_SIMULATION_PROCESSING_TIME:-10}"
-        echo "WORKER_SIMULATION_STEPS=${WORKER_SIMULATION_STEPS:-5}"
-        echo "WORKER_BASE_COMFYUI_PORT=${WORKER_BASE_COMFYUI_PORT}"
-        echo "WORKER_BASE_A1111_PORT=${WORKER_BASE_A1111_PORT}"
+        echo "WORKER_SIMULATION_JOB_TYPE=simulation"
+        echo "WORKER_SIMULATION_PROCESSING_TIME=10"
+        echo "WORKER_SIMULATION_STEPS=5"
+        echo "WORKER_BASE_COMFYUI_PORT=8188"
+        echo "WORKER_BASE_A1111_PORT=3001"
         # Added: 2025-04-13T21:45:00-04:00 - Azure Blob Storage environment variables
         # Updated: 2025-04-14T09:40:00-04:00 - Made environment variables provider-agnostic
         echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT}"
@@ -221,6 +221,7 @@ setup_env_vars() {
         echo "CLOUD_PROVIDER=${CLOUD_PROVIDER:-aws}"
         echo "STORAGE_TEST_MODE=${STORAGE_TEST_MODE:-${AWS_TEST_MODE:-${AZURE_TEST_MODE:-false}}}"
         # Added: 2025-05-07T12:15:04-04:00 - Persist provider-agnostic container names
+        echo "CLOUD_MODELS_CONTAINER=${CLOUD_MODELS_CONTAINER}"
         echo "CLOUD_STORAGE_CONTAINER=${CLOUD_STORAGE_CONTAINER}"
         echo "CLOUD_STORAGE_TEST_CONTAINER=${CLOUD_STORAGE_TEST_CONTAINER}"
         echo "SKIP_STORAGE_SYNC=${SKIP_STORAGE_SYNC:-${SKIP_AWS_SYNC:-false}}"
@@ -274,6 +275,10 @@ setup_env_vars() {
         echo "CIVITAI_TOKEN=${CIVITAI_TOKEN}"
         echo "STATIC_MODELS=${STATIC_MODELS}"
         echo "EMPROPS_DEBUG_LOGGING=${EMPROPS_DEBUG_LOGGING}"
+        echo "CLOUD_MODELS_CONTAINER=${CLOUD_MODELS_CONTAINER}"
+        echo "CLOUD_STORAGE_CONTAINER=${CLOUD_STORAGE_CONTAINER}"
+        echo "CLOUD_STORAGE_TEST_CONTAINER=${CLOUD_STORAGE_TEST_CONTAINER}"
+        echo "CLOUD_PROVIDER=${CLOUD_PROVIDER}"
     # [2025-04-15T16:24:15-04:00] Changed to more generic env.sh name for clarity and consistency
     } > /etc/profile.d/env.sh
     
@@ -1298,7 +1303,147 @@ setup_a1111() {
         log "Setting up GPU mode with $NUM_GPUS GPUs"
     fi
     
-    # Setup GPU instances (clone repository) first
+    # [2025-05-28T16:37:41-04:00] Reordered to properly clone repository on new machines
+    # First, set up the base directories
+    log "Setting up models directories..."
+    
+    # Check if we should skip storage sync
+    if [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
+        log "SKIP_STORAGE_SYNC=true: Skipping sd_models repository clone"
+        # Just create the directory structure without cloning
+        log "Creating sd_models directory structure..."
+        mkdir -p "/workspace/shared/sd_models/Stable-diffusion"
+    else
+        # Clone SD models repository first before creating any subdirectories
+        log "Checking for sd_models repository..."
+        if [ ! -d "/workspace/shared/sd_models" ]; then
+            log "Cloning sd_models repository..."
+            git clone https://github.com/stakeordie/sd_models.git "/workspace/shared/sd_models" || {
+                log "WARNING: Failed to clone sd_models repository"
+                # If clone fails, create the directory structure manually
+                mkdir -p "/workspace/shared/sd_models/Stable-diffusion"
+            }
+        else
+            log "sd_models repository already exists, skipping clone"
+        fi
+        
+        # Ensure Stable-diffusion directory exists (might not be in the repo)
+        if [ ! -d "/workspace/shared/sd_models/Stable-diffusion" ]; then
+            log "Creating Stable-diffusion directory..."
+            mkdir -p "/workspace/shared/sd_models/Stable-diffusion"
+        fi
+    fi
+    
+    # [2025-05-28T14:49:01-04:00] Download models BEFORE creating symlinks
+    # [2025-05-29T15:59:10-04:00] Fixed to only call download_a1111_models once
+    # [2025-05-29T23:03:47-04:00] Changed to use static-models.json instead of parsing output
+    log "Downloading models..."
+    log "DEBUG: Calling mgpu download_a1111_models"
+    
+    # Run the download command but don't capture the output for model loading
+    # We'll just log the output
+    mgpu download_a1111_models >> "$START_LOG" 2>&1
+    download_status=$?
+    
+    # [2025-05-29T23:51:20-04:00] Changed to load ALL available models, not just those in static-models.json
+    log "Finding all available models in the models directory..."
+    
+    # Define the model directory path
+    MODEL_DIR="/workspace/shared/sd_models/Stable-diffusion"
+    
+    if [ -d "$MODEL_DIR" ]; then
+        # [2025-05-30T00:25:30-04:00] Find all .safetensors and .ckpt files, explicitly excluding symlinks
+        log "Scanning for model files in $MODEL_DIR (excluding symlinks)"
+        
+        # [2025-05-30T00:30:15-04:00] Use a more reliable method to find files and exclude symlinks
+        MODEL_FILES=""
+        log "Checking all .safetensors and .ckpt files in $MODEL_DIR:"
+        
+        # List all files for debugging
+        ls -la "$MODEL_DIR" | grep -E '\.(safetensors|ckpt)$' >> "$START_LOG"
+        
+        for file in "$MODEL_DIR"/*.safetensors "$MODEL_DIR"/*.ckpt; do
+            # Skip if the pattern didn't match any files
+            if [ ! -f "$file" ]; then
+                continue
+            fi
+            
+            # Check if it's a symlink
+            if [ -L "$file" ]; then
+                log "SKIPPING symlink: $(basename "$file") -> $(readlink "$file")"
+                continue
+            fi
+            
+            log "ADDING real file: $(basename "$file")"
+            MODEL_FILES="$MODEL_FILES $file"
+        done
+        
+        # Extract just the filenames and create a comma-separated list
+        MODELS=""
+        for file in $MODEL_FILES; do
+            filename=$(basename "$file")
+            if [ -z "$MODELS" ]; then
+                MODELS="$filename"
+            else
+                MODELS="$MODELS,$filename"
+            fi
+            log "Model to be loaded: $filename"
+        done
+        
+        if [ -z "$MODELS" ]; then
+            log "WARNING: No model files found in $MODEL_DIR"
+        else
+            log "All models to be loaded: $MODELS"
+        fi
+    else
+        log "ERROR: Model directory $MODEL_DIR does not exist"
+        MODELS=""
+    fi
+    
+    if [ $download_status -eq 0 ]; then
+        log "Download successful, models to be loaded: $MODELS"
+    else
+        log "ERROR: Failed to download models (exit code: $download_status)"
+        # Check if SKIP_MODEL_DOWNLOAD is set
+        if [ "${SKIP_MODEL_DOWNLOAD:-false}" = "true" ]; then
+            log "SKIP_MODEL_DOWNLOAD is set to true, this is expected"
+        else
+            log "SKIP_MODEL_DOWNLOAD is not set or false, this is unexpected"
+            # Check for existing models
+            if [ -d "/workspace/shared/sd_models/Stable-diffusion" ]; then
+                log "Checking for existing models in /workspace/shared/sd_models/Stable-diffusion"
+                existing_models=$(ls -1 /workspace/shared/sd_models/Stable-diffusion/*.safetensors /workspace/shared/sd_models/Stable-diffusion/*.ckpt 2>/dev/null | wc -l)
+                log "Found $existing_models existing model files"
+                
+                if [ $existing_models -gt 0 ]; then
+                    # Build a list of models
+                    MODELS=""
+                    for model in $(ls -1 /workspace/shared/sd_models/Stable-diffusion/*.safetensors /workspace/shared/sd_models/Stable-diffusion/*.ckpt 2>/dev/null); do
+                        model_name=$(basename "$model")
+                        if [ -n "$MODELS" ]; then
+                            MODELS+=","
+                        fi
+                        MODELS+="$model_name"
+                        log "Added existing model to list: $model_name"
+                    done
+                    log "Using existing models: $MODELS"
+                else
+                    log "No existing models found"
+                    MODELS=""
+                fi
+            else
+                log "Directory /workspace/shared/sd_models/Stable-diffusion does not exist"
+                MODELS=""
+            fi
+        fi
+        
+        # Continue anyway as this is not critical
+        log "Continuing with models: $MODELS"
+    fi
+    
+    log "Models to be loaded: $MODELS"
+    
+    # Setup GPU instances (clone repository) AFTER downloading models
     log "Setting up Automatic1111 GPU instances..."
     if ! mgpu a1111 setup all; then
         log "ERROR: Failed to set up Automatic1111 GPU instances"
@@ -1312,30 +1457,8 @@ setup_a1111() {
         return 1
     fi
     
-    # Updated: 2025-05-15T13:24:36-04:00 - Simplified A1111 models setup
-    log "Setting up models directories..."
-    
-    # Check if we should skip storage sync
-    if [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
-        log "SKIP_STORAGE_SYNC=true: Skipping sd_models repository clone"
-    else
-        # Clone SD models repository
-        log "Cloning SD models repository..."
-        if [ ! -d "/workspace/shared/sd_models" ]; then
-            log "Cloning sd_models repository..."
-            git clone https://github.com/stakeordie/sd_models.git "/workspace/shared/sd_models" || {
-                log "WARNING: Failed to clone sd_models repository"
-            }
-        else
-            log "sd_models repository already exists, skipping clone"
-        fi
-    fi
-    
-    # Create Stable-diffusion directory in sd_models if it doesn't exist
-    log "Creating Stable-diffusion directory in sd_models if needed..."
-    mkdir -p "/workspace/shared/sd_models/Stable-diffusion"
-    
     # For each A1111 instance, create a symlink from its models directory to sd_models
+    # This now happens AFTER models are downloaded
     for i in $(seq 0 $((NUM_GPUS-1))); do
         log "Setting up models directory for A1111 GPU $i..."
         A1111_DIR="/workspace/a1111_gpu${i}"
@@ -1357,93 +1480,6 @@ setup_a1111() {
         }
         log "Successfully created symlink for A1111 GPU $i"
     done
-    
-    # Download models
-    log "Downloading models..."
-    if [ "${SKIP_MODEL_DOWNLOAD:-false}" = "true" ] || [ "${SKIP_STORAGE_SYNC:-false}" = "true" ]; then
-        log "Skipping model download (SKIP_MODEL_DOWNLOAD=${SKIP_MODEL_DOWNLOAD:-false}, SKIP_STORAGE_SYNC=${SKIP_STORAGE_SYNC:-false})"
-    else
-        # Updated: 2025-05-15T13:24:36-04:00 - Changed to download models to the Stable-diffusion subdirectory
-        cd "/workspace/shared/sd_models/Stable-diffusion" || {
-            log "ERROR: Failed to change to sd_models/Stable-diffusion directory"
-            return 1
-        }
-        
-        # Added: 2025-05-15T18:48:36-04:00 - Check if models were already downloaded by MGPU script
-        local existing_model_count=$(ls -1 *.safetensors *.ckpt 2>/dev/null | wc -l)
-        if [ "$existing_model_count" -gt 5 ]; then
-            log "Found $existing_model_count existing models, skipping download"
-            return 0
-        fi
-        
-        log "Starting model download process..."
-        MODELS=""
-        
-        # Updated: 2025-05-16T16:19:13-04:00 - Modified to handle STORAGE_TEST_MODE
-        ## SDXL
-            log "Downloading SDXL Base..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0_0.9vae.safetensors,"
-        
-        # Only download additional models if not in test mode
-        if [ "${STORAGE_TEST_MODE:-false}" != "true" ]; then
-            log "STORAGE_TEST_MODE is not true, downloading additional models..."
-            
-            # Download JuggernautXL
-            log "Downloading JuggernautXL..."
-            wget --quiet --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",juggernautXL_v8Rundiffusion.safetensors"
-            
-            # Download SD 2.1
-            log "Downloading SD 2.1..."
-            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",v2-1_768-ema-pruned.safetensors"
-            
-            # Download SD 1.5
-            log "Downloading SD 1.5..."
-            wget --quiet --show-progress --progress=bar:force:noscroll https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+=",v1-5-pruned.safetensors"
-
-            # Download EpiCPhotoGasm
-            log "Downloading EpiCPhotoGasm..."
-            wget --quiet --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/223670?type=Model&format=SafeTensor&size=full&fp=fp16" -O epiCPhotoGasm.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="epiCPhotoGasm.safetensors,"
-            
-            # Download SDXL Refiner
-            log "Downloading SDXL Refiner..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0_0.9vae.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0_0.9vae.safetensors,"
-            
-            # OLD 1.5
-            log "Downloading SD 1.5..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.ckpt 2>&1 | tee -a "$START_LOG" && MODELS+="v1-5-pruned.ckpt,"
-            
-            # OLD 2.1  
-            log "Downloading SD 2.1..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.ckpt 2>&1 | tee -a "$START_LOG" && MODELS+="v2-1_768-ema-pruned.ckpt,"
-            
-            # OLD SDXL
-            log "Downloading SDXL Base..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_base_1.0.safetensors,"
-            
-            # OLD SDXL Refiner
-            log "Downloading SDXL Refiner..."
-            wget --no-verbose --show-progress --progress=bar:force:noscroll https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="sd_xl_refiner_1.0.safetensors,"
-            
-            # [2025-05-19T17:30:00-04:00] Create symlink for JuggerNautXL instead of downloading again
-            log "Creating symlink for JuggerNautXL..."
-            
-            # Check if the file exists in the current directory
-            if [ -f "juggernautXL_v8Rundiffusion.safetensors" ]; then
-                # Create a symbolic link in place of the download
-                log "Found existing JuggerNautXL model, using it instead of downloading again"
-                # Add to models list
-                MODELS+="juggernautXL_v8Rundiffusion.safetensors"
-            else
-                log "WARNING: JuggerNautXL file not found, cannot use existing file"
-                # Fall back to downloading if needed
-                log "Downloading JuggerNautXL as fallback..."
-                wget --no-verbose --show-progress --progress=bar:force:noscroll "https://civitai.com/api/download/models/288982?type=Model&format=SafeTensor&size=full&fp=fp16" -O juggernautXL_v8Rundiffusion.safetensors 2>&1 | tee -a "$START_LOG" && MODELS+="juggernautXL_v8Rundiffusion.safetensors"
-            fi
-
-        fi
-        
-        log "Model download process complete"
-    fi
     
     # Start services
     log "Starting Automatic1111 GPU services..."
@@ -1488,18 +1524,31 @@ setup_a1111() {
         # Not returning error code - allowing setup to continue
     fi
     
-    # Load models
+    # [2025-05-28T14:01:43-04:00] Load models using the new function in mgpu script
     if [ -n "$MODELS" ]; then
-        log "Loading models: $MODELS"
-        IFS=',' read -r -a model_array <<< "$MODELS"
-        for model in "${model_array[@]}"; do
-            if [ -n "$model" ]; then
-                log "Loading model: $model"
-                python3 /scripts/a1111_scripts/a1111_loader.py -m "$model" || {
-                    log "WARNING: Failed to load model: $model"
-                }
-            fi
-        done
+        log "Loading models using mgpu load_a1111_models function"
+        log "DEBUG: Calling mgpu load_a1111_models with models: $MODELS"
+        
+        # Call the load function with more verbose output
+        mgpu load_a1111_models "$MODELS"
+        load_status=$?
+        
+        if [ $load_status -eq 0 ]; then
+            log "Successfully loaded models using mgpu function"
+        else
+            log "WARNING: Failed to load models using mgpu function (exit code: $load_status)"
+            # Fallback to direct loading if mgpu function fails
+            log "Falling back to direct model loading"
+            IFS=',' read -r -a model_array <<< "$MODELS"
+            for model in "${model_array[@]}"; do
+                if [ -n "$model" ]; then
+                    log "Loading model: $model"
+                    python3 /scripts/a1111_scripts/a1111_loader.py -m "$model" || {
+                        log "WARNING: Failed to load model: $model"
+                    }
+                fi
+            done
+        fi
     else
         log "No models to load"
     fi
@@ -1593,10 +1642,11 @@ start_comfyui() {
     pip uninstall -y onnxruntime-gpu
 
     pip install onnxruntime-gpu
+
     
     if [ "${MOCK_GPU:-0}" -eq 1 ]; then
         log "Starting ComfyUI in mock mode with $NUM_GPUS instances"
-        export COMFY_ARGS="--cpu"
+        export COMFY_ARGS="${COMFY_ARGS:-} --cpu"
     else
         log "Setting up GPU mode with $NUM_GPUS GPUs"
     fi
