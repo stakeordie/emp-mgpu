@@ -112,30 +112,7 @@ RUN echo "Cache bust:$SHARED_BUST" > /dev/null
 
 RUN cd ${ROOT} && rm -rf ${COMFY_DIR}
 
-FROM shared AS langflow
-
-# Add this in your final stage
-ARG LANGFLOW_BUST=0
-
-# Then use it in a way that doesn't affect the build if it changes
-RUN echo "Cache bust: $LANGFLOW_BUST" > /dev/null
-
-# Install uv through pip
-RUN pip install uv
-
-# Install Langflow with uv
-RUN uv pip install --system langflow
-
-# Add Langflow startup to init.d
-COPY scripts/langflow /etc/init.d/langflow
-RUN chmod +x /etc/init.d/langflow && \
-    update-rc.d langflow defaults
-
-COPY config/shared ${ROOT}/shared_custom_nodes
-
-RUN find ${ROOT}/shared_custom_nodes -name "requirements.txt" -execdir pip install -r {} \;
-
-FROM langflow AS a1111a
+FROM shared  AS a1111a
 
 # Layer cache bust
 ARG A1111_A_BUST=0
@@ -346,10 +323,30 @@ RUN mkdir -p /tmp/a1111_template/models/Stable-diffusion \
     /output/saved
 
 
-
-
 # Start the final stage
-FROM a1111c AS end
+FROM a1111c AS ollama
+
+# Added: 2025-06-03T18:10:06-04:00 - Replaced langflow with ollama
+ARG OLLAMA_BUST=0
+
+# Then use it in a way that doesn't affect the build if it changes
+RUN echo "Cache bust: $OLLAMA_BUST" > /dev/null
+
+# Install ollama
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+# Added: 2025-06-03T18:12:16-04:00 - Added ollama management scripts
+# Add Ollama startup to init.d
+COPY scripts/ollama /etc/init.d/ollama
+COPY scripts/mgpu_ollama /usr/local/bin/mgpu_ollama
+RUN chmod +x /etc/init.d/ollama /usr/local/bin/mgpu_ollama && \
+    update-rc.d ollama defaults
+
+COPY config/shared ${ROOT}/shared_custom_nodes
+
+RUN find ${ROOT}/shared_custom_nodes -name "requirements.txt" -execdir pip install -r {} \;
+
+FROM ollama AS end
 
 # Layer cache bust
 ARG END_BUST=0

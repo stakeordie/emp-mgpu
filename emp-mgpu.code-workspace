@@ -28,6 +28,9 @@
 		},
 		{
 			"path": "../emprops-nginx-conf"
+		},
+		{
+			"path": "../ComfyUI-LTXVideo-EmProps"
 		}
 	],
 	"settings": {}

@@ -5,6 +5,11 @@ All notable changes to the EMP MGPU project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- [2025-06-04T14:04:20-04:00] Enhanced error handling in ollama and mgpu_ollama scripts to safely source environment files, preventing script failures due to errors in /etc/environment.
+- [2025-06-04T14:01:22-04:00] Fixed Ollama GPU usage by replacing CUDA_VISIBLE_DEVICES=all with explicit GPU indices (0,1,2,...) in ollama init script and mgpu_ollama management script. This resolves an issue where Ollama would fall back to CPU instead of using available GPUs.
+- [2025-06-04T12:45:54-04:00] Fixed service verification in start.sh by making all_services_ok a global variable, resolving the issue where verification would incorrectly report failures even when all services were running correctly.
+- [2025-06-03T22:46:12-04:00] Enhanced service verification error reporting in start.sh to provide detailed failure information, including specific service errors from log files. This helps diagnose issues when services fail to start properly.
+- [2025-06-03T21:16:01-04:00] Replaced langflow with ollama in the mgpu environment. Added ollama init script, management script (mgpu_ollama), updated Dockerfile and start.sh to install and configure ollama instead of langflow. This change allows for local LLM inference using ollama models that can be connected to ComfyUI.
 - [2025-05-29T22:22:28-04:00] Enhanced model loading for multi-GPU setups: Updated `a1111_loader.py` to accept port/GPU parameters and modified `load_a1111_models` function to load models on all GPU instances. This fixes issues where models were only loaded on the first GPU in multi-GPU environments and ensures consistent model availability across all worker instances.
 - [2025-05-25T22:00:00-04:00] Added log rotation functionality to the wgpu script. Users can now rotate logs for specific GPUs or all GPUs with `./scripts/wgpu rotate [gpu_id|all]`. This creates a backup of the current log file and starts a fresh log, improving log management and debugging capabilities.
 - [2025-05-07T12:39:06-04:00] Modified start.sh to install requirements.txt for custom nodes in manage_custom_nodes. This ensures Python dependencies like azure-storage-blob for EmProps_Cloud_Storage_Saver are installed, fixing 'Unsupported provider: azure' errors.

@@ -1744,11 +1744,8 @@ verify_and_report() {
     fi
 }
 
-# Added: 2025-06-04T12:45:54-04:00 - Made all_services_ok a global variable to fix verification reporting
-# Initialize global variable
-all_services_ok=true
-
 verify_services() {
+    local all_services_ok=true
     # Clear the failed services array
     failed_services=()
     
@@ -1927,45 +1924,50 @@ verify_services() {
         log "Redis Worker $instance: Service: $worker_status"
     done
     
-    # Added: 2025-06-03T22:17:27-04:00 - Replaced Langflow verification with Ollama verification
-    log "Checking Ollama service..."
-    ollama_running=false
+    # Check Langflow
+    log "Checking Langflow service..."
+    # [2025-05-19T17:42:00-04:00] Updated Langflow verification to be more reliable and consistent
+    langflow_running=false
     
-    # Get Ollama host and port from environment or use defaults
-    local ollama_host="${OLLAMA_HOST:-127.0.0.1}"
-    local ollama_port="${OLLAMA_PORT:-11434}"
-    
-    # Method 1: Check using process search
-    if pgrep -f "ollama serve" >/dev/null; then
-        log "Ollama process is running (process check)"
-        ollama_running=true
+    # Skip the sv check since it's not available and causing errors
+    # Method 1: Check using process search - use a more flexible pattern
+    if pgrep -f "langflow" >/dev/null; then
+        log "Langflow process is running (process check)"
+        langflow_running=true
     else
-        log "NOTE: Ollama process not found via process check"
+        # Try alternative process patterns
+        if ps aux | grep -v grep | grep -q "langflow run"; then
+            log "Langflow process is running (alternative process check)"
+            langflow_running=true
+        else
+            log "NOTE: Langflow process not found via process checks"
+        fi
     fi
     
-    # Method 2: Direct port check
-    if netstat -tuln | grep -q ":$ollama_port "; then
-        log "Ollama port $ollama_port is listening (port check)"
-        ollama_running=true
+    # Method 3: Direct port check
+    local langflow_port=7860
+    if netstat -tuln | grep -q ":$langflow_port "; then
+        log "Langflow port $langflow_port is listening (port check)"
+        langflow_running=true
     else
-        log "NOTE: Ollama port $ollama_port not listening"
+        log "NOTE: Langflow port $langflow_port not listening"
     fi
     
-    # Method 3: API check
-    if curl -s -o /dev/null -w "%{http_code}" http://$ollama_host:$ollama_port/api/tags | grep -q "200"; then
-        log "Ollama is responding to API requests (API check)"
-        ollama_running=true
+    # Method 4: HTTP check
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:$langflow_port/ | grep -q "200\|302"; then
+        log "Langflow is responding to HTTP requests (HTTP check)"
+        langflow_running=true
     else
-        log "NOTE: Ollama not responding to API requests"
+        log "NOTE: Langflow not responding to HTTP requests"
     fi
     
     # Final decision based on all checks
-    if [ "$ollama_running" = "true" ]; then
-        log "SUCCESS: Ollama is running (at least one check passed)"
+    if [ "$langflow_running" = "true" ]; then
+        log "SUCCESS: Langflow is running (at least one check passed)"
     else
-        log "ERROR: Ollama is not running (all checks failed)"
+        log "ERROR: Langflow is not running (all checks failed)"
         all_services_ok=false
-        failed_services+=("Ollama")
+        failed_services+=("Langflow")
     fi
     
     # Check Redis Workers
@@ -2086,8 +2088,8 @@ verify_services() {
     # Print final service status summary after all checks are complete
     log "=== Service Status Summary ==="
     log "NGINX: $(service nginx status >/dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING")"
-    # Added: 2025-06-03T22:17:27-04:00 - Replaced langflow status with ollama status
-    log "Ollama: $([ "$ollama_running" = "true" ] && echo "RUNNING" || echo "NOT RUNNING")"
+    # Use the langflow_running variable instead of service check which may not be reliable
+    log "Langflow: $([ "$langflow_running" = "true" ] && echo "RUNNING" || echo "NOT RUNNING")"
     
     # Report status for each GPU instance
     for instance in $(seq 0 $((NUM_GPUS-1))); do
@@ -2101,54 +2103,12 @@ verify_services() {
         log "Redis Worker $instance: Service: $worker_status"
     done
     
-    # Added: 2025-06-03T22:46:12-04:00 - Enhanced error reporting
-    # Return final status with detailed error information
+    # Return final status
     if [ "$all_services_ok" = true ]; then
         log "All services are running correctly"
         return 0
     else
         log "Some services have issues"
-        
-        # Print the failed services with more detail
-        log "==== DETAILED FAILURE REPORT ===="
-        for service in "${failed_services[@]}"; do
-            log "FAILED: $service"
-            
-            # For ComfyUI instances, check logs for specific errors
-            if [[ "$service" == *"ComfyUI"* ]] && [[ "$service" == *"instance"* ]]; then
-                instance=$(echo "$service" | grep -o '[0-9]\+')
-                if [ -n "$instance" ]; then
-                    log "  Checking ComfyUI logs for instance $instance:"
-                    tail -n 20 "/workspace/logs/comfyui_${instance}.log" 2>/dev/null | grep -i "error\|exception\|failed" | head -n 5 | while read -r line; do
-                        log "    ERROR: $line"
-                    done
-                fi
-            fi
-            
-            # For A1111 instances, check logs for specific errors
-            if [[ "$service" == *"Automatic1111"* ]] && [[ "$service" == *"instance"* ]]; then
-                instance=$(echo "$service" | grep -o '[0-9]\+')
-                if [ -n "$instance" ]; then
-                    log "  Checking A1111 logs for instance $instance:"
-                    tail -n 20 "/workspace/logs/a1111_${instance}.log" 2>/dev/null | grep -i "error\|exception\|failed" | head -n 5 | while read -r line; do
-                        log "    ERROR: $line"
-                    done
-                fi
-            fi
-            
-            # For Redis workers, check logs for specific errors
-            if [[ "$service" == *"Redis Worker"* ]]; then
-                instance=$(echo "$service" | grep -o '[0-9]\+')
-                if [ -n "$instance" ]; then
-                    log "  Checking Redis Worker logs for instance $instance:"
-                    tail -n 20 "/workspace/logs/worker_${instance}.log" 2>/dev/null | grep -i "error\|exception\|failed" | head -n 5 | while read -r line; do
-                        log "    ERROR: $line"
-                    done
-                fi
-            fi
-        done
-        log "================================"
-        
         return 1
     fi
 }
