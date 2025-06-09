@@ -49,16 +49,16 @@ main() {
     log ""
     log "=============== Steps ================"
     log "1. Check environment variables"
-    log "2. Setup SSH access"
-    log "3. Setup pre-installed nodes"
-    log "4. Install nodes from config"
-    log "5. Download models"
-    log "6. Setup NGINX"
-    log "7. Setup shared directories"
-    log "8. Setup ComfyUI instances"
-    log "9. Setup service scripts"
-    log "10. Start NGINX"
-    log "11. Start ComfyUI services"
+    log "2. Setup Git SSH authentication"
+    log "3. Setup SSH access"
+    log "4. Setup pre-installed nodes"
+    log "5. Install nodes from config"
+    log "6. Download models"
+    log "7. Setup NGINX"
+    log "8. Setup shared directories"
+    log "9. Setup ComfyUI"
+    log "10. Setup A1111"
+    log "11. Start services"
     log "12. Verify all services"
     log "====================================="
     log ""
@@ -77,6 +77,11 @@ main() {
         return 1
     fi
     
+    # Phase 3: Setup Git SSH authentication
+    log_phase "3" "Setting up Git SSH authentication"
+    # Don't fail if Git SSH setup fails, just continue with HTTPS
+    setup_git_ssh
+    
     # Phase 3: Setup pre-installed nodes
     log_phase "3" "Setting up custom nodes"
     setup_preinstalled_nodes
@@ -85,8 +90,12 @@ main() {
     log_phase "4" "Setting up custom nodes"
     manage_custom_nodes
 
+    # Phase 5: Start workflow auto-sync service
+    log_phase "5" "Starting workflow auto-sync service"
+    start_workflow_sync
+
     # Updated: 2025-04-14T09:50:00-04:00 - Made storage sync provider-agnostic
-    log_phase "5" "model sync"
+    log_phase "6" "model sync"
     if ! sync_models; then
         log "ERROR: Model sync failed"
         return 1
@@ -349,23 +358,80 @@ set_gpu_env() {
     log "GPU Environment: NUM_GPUS=$NUM_GPUS MOCK_GPU=$MOCK_GPU"
 }
 
+# Flag: 2025-06-07T11:05:00-04:00 - Added Git SSH setup function
+setup_git_ssh() {
+    log "Setting up Git SSH authentication..."
+    
+    # Set default Git identity if not already set
+    if [ -z "$(git config --global user.email)" ]; then
+        log "Setting default Git identity"
+        git config --global user.name "EmProps User"
+        git config --global user.email "user@emprops.ai"
+    fi
+    
+    # Start SSH agent if not already running
+    if ! pgrep -x "ssh-agent" > /dev/null; then
+        log "Starting SSH agent"
+        eval "$(ssh-agent -s)" > /dev/null
+    fi
+    
+    # Add SSH key to agent if it exists
+    if [ -f "/root/.ssh/id_ed25519" ]; then
+        log "Adding id_ed25519 key to SSH agent"
+        ssh-add /root/.ssh/id_ed25519 2>/dev/null || log "WARNING: Failed to add id_ed25519 key"
+    fi
+    
+    # Check if shared repository exists
+    if [ -d "${ROOT}/shared" ]; then
+        log "Setting up SSH for emprops_shared repository"
+        
+        # Set the remote URL directly in the shared repository
+        cd "${ROOT}/shared" || {
+            log "ERROR: Could not change to shared directory"
+            return 1
+        }
+        
+        # Set the remote URL to use SSH
+        log "Setting remote URL to use SSH for emprops_shared"
+        if git remote set-url origin git@github.com:stakeordie/emprops_shared.git; then
+            log "Successfully set remote URL to use SSH"
+            
+            # Verify the remote URL was set correctly
+            log "Verifying remote URL:"
+            git remote -v
+            return 0
+        else
+            log "WARNING: Failed to set remote URL, continuing with HTTPS"
+            return 1
+        fi
+    else
+        log "WARNING: Shared directory not found at ${ROOT}/shared"
+        return 1
+    fi
+}
+
 setup_ssh_access() {
     log "Starting SSH agent"
     eval "$(ssh-agent -s)"
 
     log "Setting up SSH access..."
     
-    # Verify SSH directory exists and has correct permissions
-    if [ ! -d "/root/.ssh" ]; then
-        log "Creating /root/.ssh directory"
-        mkdir -p /root/.ssh
-        chmod 700 /root/.ssh
-    fi
-    
-    # Verify directory permissions
-    if [ "$(stat -c %a /root/.ssh)" != "700" ]; then
-        log "Fixing /root/.ssh directory permissions"
-        chmod 700 /root/.ssh
+    # Check if SSH directory is writable
+    if [ -w "/root" ] && ([ ! -d "/root/.ssh" ] || [ -w "/root/.ssh" ]); then
+        # Directory is writable, we can create or modify it
+        if [ ! -d "/root/.ssh" ]; then
+            log "Creating /root/.ssh directory"
+            mkdir -p /root/.ssh
+            chmod 700 /root/.ssh
+        fi
+        
+        # Verify directory permissions if we can modify them
+        if [ -w "/root/.ssh" ] && [ "$(stat -c %a /root/.ssh)" != "700" ]; then
+            log "Fixing /root/.ssh directory permissions"
+            chmod 700 /root/.ssh || log "WARNING: Could not change directory permissions"
+        fi
+    else
+        log "WARNING: /root/.ssh directory is not writable, skipping permission fixes"
     fi
 
     # Check if all key parts are present
@@ -379,29 +445,38 @@ setup_ssh_access() {
             return 1
         fi
         
-        # Write the key to file
-        if ! echo "$full_key" > /root/.ssh/id_ed25519; then
-            log "ERROR: Failed to write SSH key to file"
-            return 1
+        # Check if we can write to the SSH directory
+        if [ -w "/root/.ssh" ]; then
+            # Write the key to file
+            if ! echo "$full_key" > /root/.ssh/id_ed25519; then
+                log "ERROR: Failed to write SSH key to file"
+                return 1
+            fi
+            
+            # Set correct permissions if file is writable
+            if [ -w "/root/.ssh/id_ed25519" ]; then
+                chmod 400 /root/.ssh/id_ed25519 || log "WARNING: Could not set key file permissions"
+            fi
+            
+            # Verify key file exists and has correct permissions
+            if [ ! -f "/root/.ssh/id_ed25519" ]; then
+                log "ERROR: SSH key file not found after creation"
+                return 1
+            fi
+        else
+            log "WARNING: Cannot write to /root/.ssh directory, skipping SSH key creation"
+            # Check if the key already exists and is readable
+            if [ ! -r "/root/.ssh/id_ed25519" ]; then
+                log "ERROR: No readable SSH key found and cannot create one"
+                return 1
+            fi
+            log "Found existing id_ed25519 key, will use that instead"
         fi
         
-        # Set correct permissions
-        chmod 400 /root/.ssh/id_ed25519
-        
-        # Verify key file exists and has correct permissions
-        if [ ! -f "/root/.ssh/id_ed25519" ]; then
-            log "ERROR: SSH key file not found after creation"
-            return 1
-        fi
-        
-        if [ "$(stat -c %a /root/.ssh/id_ed25519)" != "400" ]; then
-            log "ERROR: SSH key file has incorrect permissions"
-            chmod 400 /root/.ssh/id_ed25519
-        fi
-        
-        # Try to add the key
+        # Add the key to SSH agent
+        log "Adding id_ed25519 key to SSH agent"
         if ! ssh-add /root/.ssh/id_ed25519; then
-            log "ERROR: Failed to add SSH key to agent"
+            log "ERROR: Failed to add id_ed25519 SSH key to agent"
             return 1
         fi
         
@@ -421,22 +496,20 @@ setup_ssh_access() {
         while [ $attempt -le $max_attempts ]; do
             log "SSH connection attempt $attempt of $max_attempts"
             if ssh -T git@github.com -o StrictHostKeyChecking=no 2>&1 | grep -q "successfully authenticated"; then
+                log "Successfully connected to GitHub via SSH"
                 success=true
                 break
             else
-                log "SSH attempt $attempt failed with exit code $?"
+                log "SSH connection attempt $attempt failed"
+                sleep 2
             fi
-            attempt=$((attempt + 1))
-            if [ $attempt -le $max_attempts ]; then
-                log "Waiting 10 seconds before next attempt..."
-                sleep 10
-                log "Resuming after wait"
-            fi
+            attempt=$((attempt+1))
         done
         
         if [ "$success" != "true" ]; then
-            log "ERROR: Failed to connect to GitHub after $max_attempts attempts"
-            return 1
+            log "WARNING: Failed to connect to GitHub via SSH after $max_attempts attempts"
+            log "Will continue anyway, but Git operations may require manual authentication"
+            # Don't return error here, allow the process to continue
         fi
         
         log "SSH key successfully set up and verified"
@@ -450,18 +523,26 @@ setup_ssh_access() {
         return 1
     fi
 
-    # Add GitHub to known hosts if not present
-    touch /root/.ssh/known_hosts
-    chmod 644 /root/.ssh/known_hosts
-    if ! grep -q "github.com" /root/.ssh/known_hosts; then
-        ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+    # Add GitHub to known hosts if not present and if directory is writable
+    if [ -w "/root/.ssh" ]; then
+        if [ ! -f "/root/.ssh/known_hosts" ]; then
+            touch /root/.ssh/known_hosts
+            chmod 644 /root/.ssh/known_hosts
+        fi
+        
+        if [ -w "/root/.ssh/known_hosts" ] && ! grep -q "github.com" /root/.ssh/known_hosts; then
+            ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+        fi
+    else
+        log "WARNING: Cannot modify known_hosts file in read-only SSH directory"
     fi
     
     # Final verification
     log "Final SSH setup verification:"
-    log "- SSH directory: $(ls -ld /root/.ssh)"
-    log "- SSH key file: $(ls -l /root/.ssh/id_ed25519)"
-    log "- Known hosts: $(ls -l /root/.ssh/known_hosts)"
+    ssh-add -l || log "WARNING: No keys loaded in SSH agent"
+    log "- SSH directory: $(ls -ld /root/.ssh 2>/dev/null || echo 'Not accessible')"
+    log "- SSH key files: $(ls -l /root/.ssh/id_* 2>/dev/null || echo 'No key files found')"
+    log "- Known hosts: $(ls -l /root/.ssh/known_hosts 2>/dev/null || echo 'Not found')"
 }
 
 setup_preinstalled_nodes() {
@@ -2490,6 +2571,29 @@ start_redis_workers() {
     sleep 2 # Give it time to start
     service worker-watchdog status
     log "Worker Watchdog service started."
+}
+
+# Function to start the workflow auto-sync service
+start_workflow_sync() {
+    log "Starting workflow auto-sync service..."
+    
+    # Check if the script exists
+    if [ ! -f "/scripts/auto_sync_workflows.sh" ]; then
+        log "WARNING: Workflow auto-sync script not found at /scripts/auto_sync_workflows.sh"
+        return 1
+    fi
+    
+    # Start the service in the background
+    nohup bash /scripts/auto_sync_workflows.sh > /var/log/workflow_sync_stdout.log 2> /var/log/workflow_sync_stderr.log &
+    
+    # Check if the service started successfully
+    if [ $? -eq 0 ]; then
+        log "Workflow auto-sync service started with PID $!"
+        return 0
+    else
+        log "ERROR: Failed to start workflow auto-sync service"
+        return 1
+    fi
 }
 
 # Updated: 2025-05-15T16:36:47-04:00 - Call the main function and then keep container running

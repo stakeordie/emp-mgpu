@@ -94,7 +94,7 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git ${COMFY_DIR} && \
     cd ${COMFY_DIR} && \
     pip uninstall onnxruntime && \
     pip install --upgrade pip && \
-    pip install --upgrade mmengine opencv-python imgui-bundle boto3 awscli librosa azure-storage-blob && \
+    pip install --upgrade mmengine opencv-python imgui-bundle boto3 awscli librosa azure-storage-blob ollama && \
     pip install -r requirements.txt && \
     pip uninstall -y onnxruntime-gpu && \
     pip install onnxruntime-gpu==1.20.1
@@ -352,6 +352,13 @@ FROM ollama AS end
 ARG END_BUST=0
 RUN echo "Cache bust: $END_BUST" > /dev/null
 
+# Flag: 2025-06-08T16:02:00-04:00 - Configure Git with SSH setup for id_ed25519 only
+RUN mkdir -p /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    echo "Host github.com\n\tStrictHostKeyChecking no\n\tIdentityFile /root/.ssh/id_ed25519\n" > /root/.ssh/config && \
+    chmod 600 /root/.ssh/config
+
+# Flag: 2025-06-07T11:02:00-04:00 - Use HTTPS for build-time cloning
 RUN rm -rf "${ROOT}/shared" 2>/dev/null || true && \   
     git clone https://github.com/stakeordie/emprops_shared.git ${ROOT}/shared
 
@@ -360,7 +367,8 @@ COPY ./scripts/mgpu /usr/local/bin/mgpu
 RUN chmod +x /usr/local/bin/mgpu
 
 COPY scripts/start.sh /scripts/start.sh
-RUN chmod +x /scripts/start.sh
+COPY scripts/auto_sync_workflows.sh /scripts/auto_sync_workflows.sh
+RUN chmod +x /scripts/start.sh /scripts/auto_sync_workflows.sh
 
 # RUN usermod -aG crontab ubuntu
 # Create cron pid directory with correct permissions

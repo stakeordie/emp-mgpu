@@ -31,6 +31,9 @@
 		},
 		{
 			"path": "../ComfyUI-LTXVideo-EmProps"
+		},
+		{
+			"path": "../ComfyUI-GGUF-EmProps"
 		}
 	],
 	"settings": {}
