@@ -342,10 +342,6 @@ COPY scripts/mgpu_ollama /usr/local/bin/mgpu_ollama
 RUN chmod +x /etc/init.d/ollama /usr/local/bin/mgpu_ollama && \
     update-rc.d ollama defaults
 
-COPY config/shared ${ROOT}/shared_custom_nodes
-
-RUN find ${ROOT}/shared_custom_nodes -name "requirements.txt" -execdir pip install -r {} \;
-
 FROM ollama AS end
 
 # Layer cache bust
